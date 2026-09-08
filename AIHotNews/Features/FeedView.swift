@@ -5,7 +5,6 @@ struct FeedView: View {
     @Binding var isSearching: Bool
     @Environment(LibraryStore.self) private var library
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.readerSelection) private var readerSelection
     @State private var showsPoolInfo = false
 
@@ -13,10 +12,15 @@ struct FeedView: View {
 
     var body: some View {
         List {
-            if dynamicTypeSize.isAccessibilitySize {
-                Section { filters }
-                    .listRowBackground(Color.clear)
+            // 筛选跟列表一起滚动。钉在 safeAreaInset 时，大标题下拉出现的系统搜索栏会叠住分段控件。
+            Section {
+                filters
             }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listSectionSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+
             if isSearching || model.request.q != nil {
                 Section {
                     Label("搜索沿用当前时间窗、内容范围与分类。", systemImage: "line.3.horizontal.decrease")
@@ -42,14 +46,6 @@ struct FeedView: View {
         .listStyle(.inset)
 #endif
         .readerBackground()
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if !dynamicTypeSize.isAccessibilitySize {
-                filters
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(ReaderTheme.background(for: colorScheme), ignoresSafeAreaEdges: [])
-            }
-        }
         .navigationTitle("精选")
 #if os(iOS)
         .navigationBarTitleDisplayMode(readerSelection == nil ? .large : .inline)
