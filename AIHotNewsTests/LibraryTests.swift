@@ -100,6 +100,35 @@ struct LibraryTests {
         #expect(ReaderDeepLink(url: URL(string: value)!) == nil)
     }
 
+    @Test func listSummaryLineLimitsFollowReadingSurfaceAndKeepFullText() {
+        let original = URL(string: "https://example.com/a")!
+        let aihot = URL(string: "https://aihot.news/items/a")!
+        let summary = String(repeating: "摘要段落。", count: 12)
+        let item = NewsItem(
+            id: "a", title: "标题", originalTitle: nil, summary: summary,
+            source: NewsSource(name: "来源"), links: NewsLinks(aihot: aihot, original: original),
+            publishedAt: nil, discoveredAt: Date(), category: nil, score: nil, selected: true,
+            reason: "推荐理由", attribution: nil
+        )
+        let news = ArticleSnapshot(item: item)
+        let daily = ArticleSnapshot(item: DailySectionItem(
+            title: "日报条目", summary: summary, source: NewsSource(name: "来源"),
+            links: DailyContentLinks(aihot: aihot, original: original), attribution: nil
+        ))
+        let report = ArticleSnapshot(report: StoryReport(
+            id: "r", title: "报道", summary: summary,
+            source: StoryReportSource(name: "来源", firstParty: false),
+            publishedAt: Date(), links: StoryReportLinks(aihot: aihot, original: original)
+        ))
+        #expect(news.summary == summary)
+        #expect(daily.summary == summary)
+        #expect(report.summary == summary)
+        #expect(news.listSummaryLineLimit(isAccessibilitySize: false) == 2)
+        #expect(daily.listSummaryLineLimit(isAccessibilitySize: false) == nil)
+        #expect(report.listSummaryLineLimit(isAccessibilitySize: false) == 3)
+        #expect([news, daily, report].allSatisfy { $0.listSummaryLineLimit(isAccessibilitySize: true) == nil })
+    }
+
     @Test func searchDeepLinkLengthUsesUnicodeCodePoints() throws {
         var components = URLComponents(string: "aihotnews://search")!
         let boundary = String(repeating: "e\u{301}", count: 100)

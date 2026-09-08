@@ -121,7 +121,7 @@ struct ArticleRow: View {
                 Text(summary)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    .lineLimit(article.listSummaryLineLimit(isAccessibilitySize: dynamicTypeSize.isAccessibilitySize))
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -332,10 +332,13 @@ struct ArticleDetailView: View {
                 .font(.body)
                 .lineSpacing(7)
                 .fixedSize(horizontal: false, vertical: true)
-            Label {
-                Text("摘要可能由自动化系统生成，数字与引语请以原文为准。")
-            } icon: {
-                Image(systemName: "info.circle")
+            VStack(alignment: .leading, spacing: 8) {
+                Label {
+                    Text("摘要可能由自动化系统生成，数字与引语请以原文为准。")
+                } icon: {
+                    Image(systemName: "info.circle")
+                }
+                Text("网站详情里的完整中文译文不在公开接口中。本卡片只展示摘要与推荐理由，全文请打开站内页或原文。")
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
