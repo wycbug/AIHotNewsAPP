@@ -28,7 +28,8 @@ struct FeatureStateTests {
         await model.load()
         #expect(model.items.map(\.id) == ["a"])
         #expect(model.nextCursor == nil)
-        #expect(await transport.requests.isEmpty)
+        #expect(await transport.requests.count == 1)
+        #expect(await transport.requests.first?.value(forHTTPHeaderField: "If-None-Match") == nil)
     }
 
     @Test func offlinePaginationKeepsCursorAndRowsUntilSuccessfulRetry() async throws {
@@ -247,6 +248,163 @@ struct FeatureStateTests {
         for address in ["file:///etc/passwd", "javascript:alert(1)", "mailto:test@example.com", "tel:123", "aihotnews://feed", "https:relative"] {
             #expect(!ExternalLinkPolicy.allows(try #require(URL(string: address))))
         }
+    }
+
+    @Test func returningToFeedPreservesAllLoadedPagesAndCursor() async throws {
+        let transport = StubTransport([
+            .response(200, [:], try itemsBody(["a"], cursor: "next")),
+            .response(200, [:], try itemsBody(["b"], cursor: "third"))
+        ])
+        let model = FeedViewModel(repository: NewsRepository(client: APIClient(transport: transport)))
+        await model.load()
+        await model.loadMore()
+        await model.load()
+        #expect(model.items.map(\.id) == ["a", "b"])
+        #expect(model.nextCursor == "third")
+        #expect(await transport.requests.count == 2)
+    }
+
+    @Test(arguments: [true, false])
+    func revalidatedFirstPagePreservesLoadedPagesAndPagination(hasMore: Bool) async throws {
+        let cursor = hasMore ? "third" : nil
+        let transport = StubTransport([
+            .response(200, ["ETag": "first-tag", "Cache-Control": "no-cache"], try itemsBody(["a"], cursor: "next")),
+            .response(200, [:], try itemsBody(["b"], cursor: cursor)),
+            .response(304, ["Cache-Control": "s-maxage=60"], Data())
+        ])
+        let model = FeedViewModel(repository: NewsRepository(client: APIClient(transport: transport)))
+        await model.load()
+        await model.loadMore()
+        await model.refreshIfIdle()
+        #expect(model.items.map(\.id) == ["a", "b"])
+        #expect(model.nextCursor == cursor)
+        #expect(model.hasMore == hasMore)
+        #expect(model.message?.hasPrefix("更新于") == true)
+        await model.load()
+        #expect(model.items.map(\.id) == ["a", "b"])
+        #expect(model.nextCursor == cursor)
+        #expect(model.hasMore == hasMore)
+        let requests = await transport.requests
+        #expect(requests.count == 3)
+        #expect(requests.last?.value(forHTTPHeaderField: "If-None-Match") == "first-tag")
+    }
+
+    @Test func changedFirstPageReplacesLoadedPages() async throws {
+        let transport = StubTransport([
+            .response(200, ["Cache-Control": "no-cache"], try itemsBody(["a"], cursor: "next")),
+            .response(200, [:], try itemsBody(["b"], cursor: "third")),
+            .response(200, [:], try itemsBody(["new"], cursor: "new-next"))
+        ])
+        let model = FeedViewModel(repository: NewsRepository(client: APIClient(transport: transport)))
+        await model.load()
+        await model.loadMore()
+        await model.refreshIfIdle()
+        #expect(model.items.map(\.id) == ["new"])
+        #expect(model.nextCursor == "new-next")
+        #expect(model.hasMore)
+        #expect(await transport.requests.count == 3)
+    }
+
+    @Test func revalidatedSharedCacheUpdateReplacesPreviouslyDisplayedPages() async throws {
+        let transport = StubTransport([
+            .response(200, ["ETag": "old-tag", "Cache-Control": "no-cache"], try itemsBody(["a"], cursor: "next")),
+            .response(200, [:], try itemsBody(["b"], cursor: "third")),
+            .response(200, ["ETag": "new-tag", "Cache-Control": "no-cache"], try itemsBody(["new"], cursor: "new-next")),
+            .response(304, [:], Data())
+        ])
+        let client = APIClient(transport: transport)
+        let model = FeedViewModel(repository: NewsRepository(client: client))
+        await model.load()
+        await model.loadMore()
+        _ = try await client.fetch(APIEndpoint<ItemsResponse>.items(), policy: .reload)
+        await model.refreshIfIdle()
+        #expect(model.items.map(\.id) == ["new"])
+        #expect(model.nextCursor == "new-next")
+        #expect(model.hasMore)
+        let requests = await transport.requests
+        #expect(requests.count == 4)
+        #expect(requests.last?.value(forHTTPHeaderField: "If-None-Match") == "new-tag")
+    }
+
+    @Test func invalidCursorRebuildsPaginationEvenWhenFirstPageIsRevalidated() async throws {
+        let transport = StubTransport([
+            .response(200, ["ETag": "first-tag"], try itemsBody(["a"], cursor: "next")),
+            .response(200, [:], try itemsBody(["b"], cursor: "expired")),
+            .response(400, [:], problemBody(code: "invalid_cursor", status: 400)),
+            .response(304, [:], Data())
+        ])
+        let model = FeedViewModel(repository: NewsRepository(client: APIClient(transport: transport)))
+        await model.load()
+        await model.loadMore()
+        await model.loadMore()
+        #expect(model.items.map(\.id) == ["a"])
+        #expect(model.nextCursor == "next")
+        #expect(model.hasMore)
+        #expect(model.pageError == nil)
+        #expect(await transport.requests.count == 4)
+    }
+
+    @Test func nextShanghaiDayRebuildsPaginationForUnchangedFirstPage() async throws {
+        let clock = TestClock()
+        let transport = StubTransport([
+            .response(200, ["ETag": "first-tag"], try itemsBody(["a"], cursor: "next")),
+            .response(200, [:], try itemsBody(["b"], cursor: "third")),
+            .response(200, ["ETag": "first-tag"], try itemsBody(["a"], cursor: "next"))
+        ])
+        let client = APIClient(transport: transport, now: { clock.now })
+        let model = FeedViewModel(repository: NewsRepository(client: client), now: { clock.now })
+        await model.load()
+        await model.loadMore()
+        clock.advance(86_400)
+        _ = try await client.fetch(APIEndpoint<ItemsResponse>.items(), policy: .reload)
+        await model.refreshIfIdle()
+        #expect(model.items.map(\.id) == ["a"])
+        #expect(model.nextCursor == "next")
+        #expect(model.hasMore)
+        let requests = await transport.requests
+        #expect(requests.count == 3)
+        #expect(requests.last?.value(forHTTPHeaderField: "If-None-Match") == nil)
+    }
+
+    @Test func browsedPagesPersistAsCursorFreeOfflineSnapshot() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = try ResponseCache(directory: directory)
+        let client = APIClient(cache: cache, transport: StubTransport([
+            .response(200, ["ETag": "first-tag"], try itemsBody(["a"], cursor: "sensitive-cursor")),
+            .response(200, ["ETag": "page-tag"], try itemsBody(["a", "b"], cursor: "next-secret"))
+        ]))
+        let model = FeedViewModel(repository: NewsRepository(client: client))
+        await model.load()
+        await model.loadMore()
+        let disk = try String(contentsOf: directory.appendingPathComponent("responses-v1.json"), encoding: .utf8)
+        #expect(!disk.contains("sensitive-cursor"))
+        #expect(!disk.contains("next-secret"))
+        let restored = APIClient(cache: try ResponseCache(directory: directory), transport: StubTransport([]))
+        let snapshot = try #require(await restored.cached(APIEndpoint<ItemsResponse>.items()))
+        #expect(snapshot.value.items.map(\.id) == ["a", "b"])
+        #expect(snapshot.value.page.nextCursor == nil)
+        #expect(await restored.cachedItem(id: "b")?.id == "b")
+        _ = try await client.fetch(APIEndpoint<ItemsResponse>.items(), policy: .cacheOnly)
+        let firstPage = try APIEndpoint<ItemsResponse>.items()
+        #expect(await client.cached(firstPage)?.value.items.map(\.id) == ["a"])
+    }
+
+    @Test func diskFirstPageIsRenderedOfflineWithoutPretendingPaginationEnded() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = try ResponseCache(directory: directory)
+        let client = APIClient(cache: cache, transport: StubTransport([
+            .response(200, [:], try itemsBody(["saved"], cursor: "opaque"))
+        ]))
+        _ = try await client.fetch(APIEndpoint<ItemsResponse>.items())
+        let offline = APIClient(cache: try ResponseCache(directory: directory), transport: StubTransport([.failure(.notConnectedToInternet)]))
+        let model = FeedViewModel(repository: NewsRepository(client: offline))
+        await model.load()
+        #expect(model.items.map(\.id) == ["saved"])
+        #expect(model.nextCursor == nil)
+        #expect(model.hasMore)
+        #expect(model.message?.hasPrefix("离线") == true)
     }
 
     private func itemsBody(_ ids: [String], cursor: String?) throws -> Data {

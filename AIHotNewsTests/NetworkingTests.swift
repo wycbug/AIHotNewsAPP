@@ -220,7 +220,7 @@ struct NetworkingTests {
         let task = Task { try await client.fetch(APIEndpoint<HotTopicsResponse>.hotTopics()) }
         try await Task.sleep(for: .milliseconds(50))
         try await client.clearCache()
-        _ = try await task.value
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
         #expect(await client.cached(.hotTopics()) == nil)
     }
 
@@ -229,6 +229,23 @@ struct NetworkingTests {
         #expect(HTTPHeaders.retryDate("Thu, 01 Jan 1970 00:02:00 GMT", now: now) == Date(timeIntervalSince1970: 120))
         #expect(HTTPHeaders.retryDate("nonsense", now: now) == nil)
         #expect(HTTPHeaders.retryDate("-3", now: now) == now)
+    }
+
+    @Test func dailyIndexFreshnessStopsAtNextShanghaiPublication() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-09-08T23:59:00Z")!
+        let endpoint = APIEndpoint<DailyResponse>.latestDaily()
+        let response = HTTPURLResponse(url: endpoint.url, statusCode: 200, httpVersion: nil, headerFields: [:])!
+        #expect(endpoint.freshUntil(control: "s-maxage=86400", response: response, now: now) == now.addingTimeInterval(60))
+        #expect(endpoint.freshUntil(control: "s-maxage=30", response: response, now: now) == now.addingTimeInterval(30))
+    }
+
+    @Test func latestDailyAlsoCachesItsReturnedDateForOfflineArchive() async throws {
+        let transport = StubTransport([.response(200, [:], Data(#"{"schemaVersion":1,"report":{"date":"2026-09-08","generatedAt":"2026-09-08T00:00:00Z","windowStart":"2026-09-07T00:00:00Z","windowEnd":"2026-09-08T00:00:00Z","links":{"aihot":"https://aihot.news/daily/2026-09-08"},"lead":null,"sections":[],"flashes":[]}}"#.utf8))])
+        let client = APIClient(transport: transport)
+        _ = try await client.fetch(APIEndpoint<DailyResponse>.latestDaily())
+        let report = try await client.fetch(APIEndpoint<DailyResponse>.daily(date: "2026-09-08"))
+        #expect(report.source == .cache)
+        #expect(await transport.requests.count == 1)
     }
 
     @Test func diskCacheSurvivesRestartAndDoesNotPersistCursors() async throws {

@@ -80,6 +80,22 @@ nonisolated enum APIError: Error, LocalizedError, Sendable {
         default: return false
         }
     }
+
+    var requestID: String? {
+        switch self {
+        case .problem(let problem, _): problem.requestId.isEmpty ? nil : problem.requestId
+        case .http(_, let id, _): id
+        default: nil
+        }
+    }
+
+    var isNotFound: Bool {
+        switch self {
+        case .problem(let problem, _): problem.status == 404
+        case .http(let status, _, _): status == 404
+        default: false
+        }
+    }
 }
 
 nonisolated enum FetchPolicy: Sendable { case standard, reload, cacheOnly }
@@ -130,8 +146,9 @@ nonisolated final class URLSessionTransport: NSObject, HTTPTransport, URLSession
 
 actor APIClient {
     private struct Flight {
+        let owner: UUID
         let task: Task<RawResult, Error>
-        var waiters: Set<UUID>
+        var waiters: [UUID: CheckedContinuation<RawResult, Error>]
     }
 
     private struct RawResult: Sendable {
@@ -166,25 +183,31 @@ actor APIClient {
 
     func fetch<Response>(_ endpoint: APIEndpoint<Response>, policy: FetchPolicy = .standard) async throws -> APIResult<Response> {
         try Task.checkCancellation()
+        let generation = cacheGeneration
         let entry = await cache.value(for: endpoint.url, now: now())
+        try Task.checkCancellation()
+        guard generation == cacheGeneration else { throw CancellationError() }
         if policy == .cacheOnly || (policy == .standard && entry.map { $0.freshUntil > now() } == true) {
             guard let entry else { throw APIError.cacheMiss }
             return try decode(RawResult(entry: entry, source: .cache, staleError: nil))
         }
         let id = UUID()
-        let task: Task<RawResult, Error>
-        if var flight = flights[endpoint.url] {
-            flight.waiters.insert(id)
-            flights[endpoint.url] = flight
-            task = flight.task
-        } else {
-            let generation = cacheGeneration
-            task = Task { try await self.load(endpoint, cached: entry, generation: generation) }
-            flights[endpoint.url] = Flight(task: task, waiters: [id])
-        }
         return try await withTaskCancellationHandler {
-            defer { release(endpoint.url, waiter: id) }
-            let result = try await task.value
+            let result: RawResult = try await withCheckedThrowingContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else if var flight = flights[endpoint.url] {
+                    flight.waiters[id] = continuation
+                    flights[endpoint.url] = flight
+                } else {
+                    let task = Task { try await self.load(endpoint, cached: entry, generation: generation) }
+                    flights[endpoint.url] = Flight(owner: id, task: task, waiters: [id: continuation])
+                    Task {
+                        let result = await task.result
+                        self.finish(endpoint.url, owner: id, result: result)
+                    }
+                }
+            }
             try Task.checkCancellation()
             return try decode(result)
         } onCancel: {
@@ -194,11 +217,28 @@ actor APIClient {
 
     func clearCache() async throws {
         cacheGeneration += 1
-        try await cache.clear()
+        let previous = flights
+        flights.removeAll()
+        for flight in previous.values {
+            flight.task.cancel()
+            for waiter in flight.waiters.values { waiter.resume(throwing: CancellationError()) }
+        }
+        try await cache.clear(generation: cacheGeneration)
+    }
+
+    func cachedItem(id: String) async -> NewsItem? {
+        await cache.cachedItem(id: id, now: now())
+    }
+
+    private func finish(_ url: URL, owner: UUID, result: Result<RawResult, Error>) {
+        guard let flight = flights[url], flight.owner == owner else { return }
+        flights[url] = nil
+        for waiter in flight.waiters.values { waiter.resume(with: result) }
     }
 
     private func release(_ url: URL, waiter: UUID) {
-        guard var flight = flights[url], flight.waiters.remove(waiter) != nil else { return }
+        guard var flight = flights[url], let continuation = flight.waiters.removeValue(forKey: waiter) else { return }
+        continuation.resume(throwing: CancellationError())
         if flight.waiters.isEmpty {
             flight.task.cancel()
             flights[url] = nil
@@ -242,6 +282,7 @@ actor APIClient {
     }
 
     private func request<Response>(_ endpoint: APIEndpoint<Response>, cached: CachedResponse?, generation: Int) async throws -> RawResult {
+        let listRevision = await cache.listRevision(for: endpoint.url, now: now())
         var url = cached?.resolvedURL ?? endpoint.url
         var visited: Set<URL> = []
         var previous = cached
@@ -278,10 +319,10 @@ actor APIClient {
                 entry.etag = response.value(forHTTPHeaderField: "ETag") ?? entry.etag
                 let control = response.value(forHTTPHeaderField: "Cache-Control") ?? entry.cacheControl
                 entry.cacheControl = control
-                entry.freshUntil = date.addingTimeInterval(HTTPHeaders.freshness(control, response: response, fallback: endpoint.defaultFreshness))
+                entry.freshUntil = endpoint.freshUntil(control: control, response: response, now: date)
                 entry.expiresAt = date.addingTimeInterval(endpoint.cacheRetention)
                 entry.resolvedURL = url
-                try await store(entry, for: endpoint, generation: generation)
+                try await store(entry, for: endpoint, generation: generation, listRevision: listRevision)
                 return RawResult(entry: entry, source: .revalidated, staleError: nil)
             }
             guard response.statusCode == 200 else {
@@ -293,8 +334,7 @@ actor APIClient {
                 } else { retryAt = nil }
                 if response.statusCode == 404 {
                     do {
-                        try await cache.remove(url)
-                        if url != endpoint.url { try await cache.remove(endpoint.url) }
+                        try await cache.invalidate([url, endpoint.url], generation: generation)
                     } catch {
                         logger.error("Unable to persist cache invalidation")
                     }
@@ -314,26 +354,30 @@ actor APIClient {
             let control = response.value(forHTTPHeaderField: "Cache-Control") ?? ""
             let entry = CachedResponse(body: result.data, etag: response.value(forHTTPHeaderField: "ETag"),
                                        validatedAt: date,
-                                       freshUntil: date.addingTimeInterval(HTTPHeaders.freshness(control, response: response, fallback: endpoint.defaultFreshness)),
+                                       freshUntil: endpoint.freshUntil(control: control, response: response, now: date),
                                        expiresAt: date.addingTimeInterval(endpoint.cacheRetention),
                                        cacheControl: control, resolvedURL: url)
-            try await store(entry, for: endpoint, generation: generation)
+            try await store(entry, for: endpoint, generation: generation, listRevision: listRevision)
             return RawResult(entry: entry, source: .network, staleError: nil)
         }
         throw APIError.invalidRedirect
     }
 
-    private func store<Response>(_ entry: CachedResponse, for endpoint: APIEndpoint<Response>, generation: Int) async throws {
+    private func store<Response>(_ entry: CachedResponse, for endpoint: APIEndpoint<Response>, generation: Int,
+                                 listRevision: UUID? = nil) async throws {
         guard generation == cacheGeneration else { return }
         do {
-            if HTTPHeaders.directives(entry.cacheControl)["no-store"] != nil {
-                try await cache.remove(entry.resolvedURL)
-                if entry.resolvedURL != endpoint.url { try await cache.remove(endpoint.url) }
-            } else {
-                try await cache.insert(entry, for: endpoint.url, persist: endpoint.persistResponse)
-                if entry.resolvedURL != endpoint.url {
-                    try await cache.insert(entry, for: entry.resolvedURL, persist: endpoint.persistResponse)
-                }
+            try await cache.store(entry, urls: [endpoint.url, entry.resolvedURL],
+                                  persist: endpoint.persistResponse, generation: generation, listRevision: listRevision)
+            if endpoint.url.path == "/api/v1/dailies/latest",
+               let daily = try? APIJSON.decoder().decode(DailyResponse.self, from: entry.body),
+               let dated = try? APIEndpoint<DailyResponse>.daily(date: LibraryKey.dailyID(daily.report.date)) {
+                var archive = entry
+                archive.resolvedURL = dated.url
+                archive.expiresAt = .distantFuture
+                archive.freshUntil = .distantFuture
+                archive.etag = nil
+                try await cache.store(archive, urls: [dated.url], persist: true, generation: generation)
             }
         } catch {
             logger.error("Unable to persist response cache")

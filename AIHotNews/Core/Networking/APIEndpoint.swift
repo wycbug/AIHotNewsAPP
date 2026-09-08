@@ -73,6 +73,16 @@ nonisolated struct APIEndpoint<Response: APIResponse>: Sendable {
     let cacheRetention: TimeInterval
     let persistResponse: Bool
 
+    func freshUntil(control: String, response: HTTPURLResponse, now: Date) -> Date {
+        let ttl = HTTPHeaders.freshness(control, response: response, fallback: defaultFreshness)
+        let deadline = now.addingTimeInterval(ttl)
+        guard url.path == "/api/v1/dailies" || url.path == "/api/v1/dailies/latest" else { return deadline }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let publication = calendar.nextDate(after: now, matching: DateComponents(hour: 8), matchingPolicy: .nextTime)!
+        return min(deadline, publication)
+    }
+
     private init(
         url: URL,
         defaultFreshness: TimeInterval,
