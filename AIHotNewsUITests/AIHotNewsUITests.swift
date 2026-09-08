@@ -49,6 +49,33 @@ final class AIHotNewsUITests: XCTestCase {
     }
 
     @MainActor
+    func testFeedFiltersScrollWithListAndStayHittableUnderSearch() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-test-session", UUID().uuidString, "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launch()
+        let article = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "开源模型发布全新推理能力")).firstMatch
+        XCTAssertTrue(article.waitForExistence(timeout: 15))
+        let segmentedFilter = app.segmentedControls.buttons["24 小时"].firstMatch
+        let buttonFilter = app.buttons["24 小时"].firstMatch
+        XCTAssertTrue(segmentedFilter.waitForExistence(timeout: 5) || buttonFilter.waitForExistence(timeout: 5))
+        let filter = segmentedFilter.exists ? segmentedFilter : buttonFilter
+        XCTAssertTrue(filter.isHittable)
+
+        let list = app.collectionViews.firstMatch.exists ? app.collectionViews.firstMatch : app.tables.firstMatch
+        list.swipeDown()
+        let search = app.searchFields.firstMatch
+        if search.waitForExistence(timeout: 3) {
+            XCTAssertTrue(filter.waitForExistence(timeout: 3))
+            XCTAssertTrue(filter.isHittable, "下拉出现搜索框后，时间窗筛选仍应可点，不能被搜索栏挡住")
+        }
+
+        list.swipeUp()
+        list.swipeUp()
+        XCTAssertTrue(article.waitForExistence(timeout: 5))
+        capture("13-feed-filters-scroll", app)
+    }
+
+    @MainActor
     func testSearchEmptyStateAndAppearance() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-test-session", UUID().uuidString, "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
