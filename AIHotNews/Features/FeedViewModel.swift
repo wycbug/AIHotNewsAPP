@@ -5,6 +5,7 @@ import Observation
 @Observable
 final class FeedViewModel {
     private let repository: NewsRepository
+    @ObservationIgnored private let now: @Sendable () -> Date
     var query = ItemsQuery()
     var searchText = ""
     private(set) var items: [NewsItem] = []
@@ -17,9 +18,12 @@ final class FeedViewModel {
     private var cursorDay: Date?
     private var generation = UUID()
     private var displayedQuery: ItemsQuery?
+    @ObservationIgnored private var firstPage: APIResult<ItemsResponse>?
+    private(set) var hasMore = false
 
-    init(repository: NewsRepository) {
+    init(repository: NewsRepository, now: @escaping @Sendable () -> Date = { Date() }) {
         self.repository = repository
+        self.now = now
         query.window = .day
         query.mode = .selected
         query.by = .timeline
@@ -38,6 +42,11 @@ final class FeedViewModel {
         return (2...200).contains(text.unicodeScalars.count) ? nil : "搜索请输入 2–200 个字，范围仅限当前时间窗。"
     }
 
+    func refreshIfIdle() async {
+        guard !isLoading, !isPaging, request.q == nil else { return }
+        await load()
+    }
+
     func load(reload: Bool = false, debounce: Bool = false) async {
         guard !Task.isCancelled else { return }
         let request = request
@@ -49,6 +58,8 @@ final class FeedViewModel {
             cursorDay = nil
             pageError = nil
             message = nil
+            firstPage = nil
+            hasMore = false
         } else if cursorDay != shanghaiDay() {
             nextCursor = nil
             cursorDay = nil
@@ -75,6 +86,7 @@ final class FeedViewModel {
                 try Task.checkCancellation()
                 guard generation == token, request == self.request else { return }
                 items = cached.value.items
+                hasMore = cached.value.page.hasMore
                 message = cacheMessage(cached)
                 acceptCursor(cached)
             }
@@ -87,15 +99,21 @@ final class FeedViewModel {
             retryAt = result.staleError.flatMap(retryDate)
             if result.source == .offline {
                 if items.isEmpty { items = result.value.items }
+            } else if preservesPagination(result) {
+                firstPage = result
+                return
             } else {
-                items = result.value.items
+                var known: Set<String> = []
+                items = result.value.items.filter { known.insert($0.id).inserted }
+                firstPage = result
+                hasMore = result.value.page.hasMore
                 pageError = nil
             }
             acceptCursor(result)
         } catch is CancellationError {
         } catch {
             guard !Task.isCancelled, generation == token, request == self.request else { return }
-            message = error.localizedDescription
+            message = displayError(error, hasContent: !items.isEmpty)
             retryAt = retryDate(error)
         }
     }
@@ -130,9 +148,15 @@ final class FeedViewModel {
             }
             var known = Set(items.map(\.id))
             items.append(contentsOf: result.value.items.filter { known.insert($0.id).inserted })
+            hasMore = result.value.page.hasMore
             message = cacheMessage(result)
             retryAt = result.staleError.flatMap(retryDate)
             acceptCursor(result)
+            if nextCursor == cursor {
+                nextCursor = nil
+                firstPage = nil
+                pageError = "分页未能继续，请刷新列表。"
+            }
         } catch is CancellationError {
         } catch {
             guard !Task.isCancelled, generation == token, request == self.request else { return }
@@ -141,12 +165,25 @@ final class FeedViewModel {
                problem.code == "invalid_cursor" {
                 nextCursor = nil
                 cursorDay = nil
+                firstPage = nil
                 await load(reload: true)
             } else {
                 pageError = error.localizedDescription
                 retryAt = retryDate(error)
             }
         }
+    }
+
+    private func preservesPagination(_ result: APIResult<ItemsResponse>) -> Bool {
+        guard result.source == .cache || result.source == .revalidated,
+              let firstPage, !items.isEmpty,
+              shanghaiDay(firstPage.fetchedAt) == shanghaiDay(),
+              shanghaiDay(result.fetchedAt) == shanghaiDay() else { return false }
+        // Another reader can update the shared cache before this page receives a 304.
+        return firstPage.value.items == result.value.items
+            && firstPage.value.page.count == result.value.page.count
+            && firstPage.value.page.hasMore == result.value.page.hasMore
+            && firstPage.value.page.nextCursor == result.value.page.nextCursor
     }
 
     private func acceptCursor(_ result: APIResult<ItemsResponse>) {
@@ -167,9 +204,9 @@ final class FeedViewModel {
         cursorDay = nextCursor == nil ? nil : today
     }
 
-    private func shanghaiDay(_ date: Date = .now) -> Date {
+    private func shanghaiDay(_ date: Date? = nil) -> Date {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
-        return calendar.startOfDay(for: date)
+        return calendar.startOfDay(for: date ?? now())
     }
 }
