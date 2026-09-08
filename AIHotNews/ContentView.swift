@@ -6,75 +6,83 @@
 //
 
 import SwiftUI
-import SwiftData
+
+private enum AppSection: String, CaseIterable, Identifiable {
+    case feed = "精选"
+    case hot = "热点"
+    case daily = "日报"
+    case personal = "我的"
+
+    var id: String { rawValue }
+    var symbol: String {
+        switch self {
+        case .feed: "newspaper"
+        case .hot: "flame"
+        case .daily: "calendar"
+        case .personal: "person"
+        }
+    }
+}
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
-
-    var body: some View {
-        NavigationViewWrapper {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
-                    }
-                }
-                .onDelete(perform: deleteItems)
-            }
-#if os(macOS)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
-#endif
-            .toolbar {
+    let container: AppContainer
+    @State private var selection: AppSection? = .feed
 #if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
+    @Environment(\.horizontalSizeClass) private var sizeClass
 #endif
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
+
+    var body: some View {
+        Group {
+#if os(macOS)
+            sidebar
+                .frame(minWidth: 850, minHeight: 600)
+#else
+            if sizeClass == .regular {
+                sidebar
+            } else {
+                TabView {
+                    ForEach(AppSection.allCases) { section in
+                        NavigationStack {
+                            screen(section)
+                        }
+                        .tabItem { Label(section.rawValue, systemImage: section.symbol) }
                     }
                 }
             }
-        }
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
-            }
-        }
-    }
-}
-
-fileprivate struct NavigationViewWrapper<Content: View>: View {
-    let content: () -> Content
-
-    var body: some View {
-#if os(macOS)
-        NavigationSplitView {
-            content()
-        } detail: {
-            Text("Select an item")
-        }
-#else
-        content()
 #endif
+        }
+        .tint(.accentColor)
+        .safariPresenter()
+        .task { await container.preload() }
     }
-}
 
-#Preview {
-    ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+    private var sidebar: some View {
+        NavigationSplitView {
+            List(AppSection.allCases, selection: $selection) { section in
+                Label(section.rawValue, systemImage: section.symbol)
+                    .tag(section)
+            }
+            .navigationTitle("AI 圈速览")
+            .navigationSplitViewColumnWidth(min: 180, ideal: 220)
+        } detail: {
+            NavigationStack {
+                screen(selection ?? .feed)
+            }
+            .id(selection)
+        }
+    }
+
+    @ViewBuilder
+    private func screen(_ section: AppSection) -> some View {
+        switch section {
+        case .feed:
+            FeedView(model: container.feed)
+        case .hot:
+            HotTopicsView(model: container.hotTopics, repository: container.repository)
+        case .daily:
+            DailyHomeView(container: container)
+        case .personal:
+            AboutView(container: container)
+        }
+    }
 }

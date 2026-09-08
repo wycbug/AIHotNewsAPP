@@ -10,23 +10,26 @@ import SwiftData
 
 @main
 struct AIHotNewsApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    @State private var container = AppContainer.live()
+    private let storage: Result<ModelContainer, Error> = Result {
+        let schema = Schema([Bookmark.self, ReadRecord.self])
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        return try ModelContainer(for: schema, configurations: [configuration])
+    }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            switch storage {
+            case .success(let modelContainer):
+                ContentView(container: container)
+                    .modelContainer(modelContainer)
+            case .failure(let error):
+                ContentUnavailableView {
+                    Label("本机存储无法打开", systemImage: "externaldrive.badge.exclamationmark")
+                } description: {
+                    Text("为避免丢失本机数据，未重置存储。请重新启动应用。\n\(error.localizedDescription)")
+                }
+            }
         }
-        .modelContainer(sharedModelContainer)
     }
 }
