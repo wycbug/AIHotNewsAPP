@@ -1,0 +1,693 @@
+# AI 圈速览 · 产品需求文档（PRD）
+
+| 项 | 内容 |
+| --- | --- |
+| 工程名 | AIHotNews（现有 SwiftUI 多端模板） |
+| 产品显示名 | **AI 圈速览**（商店名可再定；禁止含「官方」「合作」「认证」） |
+| 平台 | iOS 17+、iPadOS 17+、macOS 14+（SwiftUI 一套代码） |
+| 数据源 | 仅 `https://aihot.news/api/v1/*`（OpenAPI 3.1，文档版本 1.2.0） |
+| 规范依据 | [openapi-v1.json](https://aihot.news/openapi-v1.json)、[接入说明](https://aihot.news/agent)、[公开使用规则](https://aihot.news/terms) |
+| 文档受众 | 设计师、客户端工程师、测试 |
+| 版本 | V1.0（产品规划；**不是上架决策**） |
+
+面向公众上架前须另行取得书面授权。本 PRD 只定义「免费、无广告、无登录」的客户端怎么读公开 API、怎么画界面。
+
+---
+
+## 1. 产品定位
+
+### 1.1 一句话
+
+给关心 AI 行业的人一个**系统原生、可离线翻最近内容**的阅读器：看精选与公开池、看当前热点事件、读结构化日报；摘要在应用内，全文去原文。
+
+### 1.2 目标用户
+
+| 用户 | 要完成的任务 |
+| --- | --- |
+| 通勤刷资讯的从业者 | 3 分钟看完「过去 24 小时精选」 |
+| 跟事件的人 | 从热点榜进事件综述和时间线，再点进各家原文 |
+| 想留存的人 | 把条目、事件、日报收到**本机**，断网还能打开 |
+| iPad / Mac 用户 | 左列表右详情，键盘刷新与搜索 |
+
+### 1.3 价值主张
+
+- **快**：默认 24 小时精选，不把用户丢进全库。
+- **可核对**：每条都能去第三方原文；摘要旁始终标明来源。
+- **不装官方**：不使用 AIHOT 的 Logo / 视觉素材，不写官方、独家、认证。
+- **不打扰**：无账号、无广告、无推荐算法（排序完全跟 API）。
+
+### 1.4 非目标（V1 明确不做）
+
+| 不做 | 原因 |
+| --- | --- |
+| 账号 / 云同步 / 跨设备收藏 | API 无用户体系 |
+| 广告、IAP、会员、赞赏墙 | 产品约束：完全免费且不靠内容变现 |
+| 单篇第三方全文渲染、抓站内 HTML 当正文 | API **没有**按 ID 取正文；接入页写明不要猜 `/items/{id}` 或抓网页绕过正文门禁 |
+| 把全量精选做成「历史数据库 / 公开镜像」 | 快照有数千条且只增不减；条款要求合理私有缓存，禁止把缓存变成公开历史库 |
+| 周报、月报、主题页、模型榜 | 仅网页有，v1 无端点 |
+| 超过 7 天的普通资讯搜索 | `GET /items` 只覆盖滚动 7 天 |
+| 推送、Webhook、长连接 | API 无推送通道；按 `s-maxage` 条件轮询即可 |
+| 热度分数展示（热点榜） | `hot-topics` 不返回内部/展示热度，只返回 1–10 的 `rank` |
+| 白标、换皮站、批量导出给第三方 | 条款禁止 |
+| 用本应用数据做模型训练 / RAG 对外服务 | 条款禁止；客户端也不提供「导出语料」 |
+
+---
+
+## 2. 产品约束
+
+### 2.1 免费、无广告、无登录
+
+- 安装即可用，无启动墙、无邮箱、无 Sign in with Apple。
+- 不接广告 SDK、不接 ATT 广告追踪、不接付费墙。
+- 可选：本机生成 UUID，仅用于 User-Agent 里的 `aihot-actor/<uuid>`（分析去重，**不是账号、不是密钥、不是配额钥匙**）。用户可在设置里重置。不设则请求仍合法。
+
+### 2.2 品牌与来源展示
+
+**禁止**
+
+- AIHOT / 运营主体的 Logo、官网视觉、商号组合拳。
+- 「AIHOT 官方客户端」「合作伙伴」「认证」「独家数据」等文案。
+- 藏起来源名、canonical、原文 URL，或改成「本应用原创」。
+
+**必须**
+
+- 列表与详情展示 `source.name`。
+- 保留并传递 `links.original`（第三方原文）与 `links.aihot`（站内阅读页）。
+- 若响应含 `attribution`，本机存储时原样保留；设置 → 关于中用中性语句说明数据来自公开接口，并链到 `https://aihot.news/terms`。
+- 关于页固定一句：**本应用不是 AIHOT 官方产品。**
+
+**建议展示口径（关于页）**
+
+> 本应用读取 aihot.news 的公开只读接口，展示摘要、推荐理由与链接。标题翻译和摘要可能由自动化系统生成，重要事实请打开原文核对。
+
+### 2.3 客户端契约（全端点共用）
+
+| 规则 | 做法 |
+| --- | --- |
+| 忽略未知字段 | 解码用宽松策略；新字段不崩溃 |
+| `cursor` / `nextPage` | 当不透明字符串；不解析、不拼接、不跨查询复用 |
+| items 的 cursor | 不跨天持久化；锚点滑出 24h/7d 窗口会 `invalid_cursor`，从第一页重来 |
+| ETag | 按**完整 URL**缓存；请求带 `If-None-Match`；304 当作成功、沿用本地体 |
+| `Cache-Control: s-maxage` | 最小轮询间隔；当前 **items 60s、hot-topics 300s**；更密只会拿到同一份共享缓存 |
+| 429 / 503 | 遵守 `Retry-After`；不并发风暴重试 |
+| 400 | 按 `code` 修参数；**不要**自动放宽成别的查询 |
+| 无推送 | 前台用下拉刷新 + 间隔条件请求；后台用 BGAppRefresh，间隔 ≥ 该 URL 的 s-maxage |
+| Base URL | 仅 `https://aihot.news`；不要调用已宣布停服的 `/api/public/*` |
+
+---
+
+## 3. API 能提供的数据（对照 OpenAPI 1.2.0）
+
+服务器：`https://aihot.news`。全部为匿名 **GET**，无需 API Key。错误体为 `application/problem+json`（`type, title, status, detail, code, requestId`）。
+
+分类**当前**取值（查询与条目字段相同）：`ai-models`、`ai-products`、`industry`、`paper`、`tip`。客户端必须容忍**未来新字符串**。界面中文：
+
+| slug | 界面文案 |
+| --- | --- |
+| （空 / 全部） | 全部类型 |
+| `ai-models` | 模型 |
+| `ai-products` | 产品 |
+| `industry` | 行业 |
+| `paper` | 论文 |
+| `tip` | 技巧 |
+
+### 3.1 `GET /api/v1/items` — 滚动窗口资讯列表
+
+**适合界面：** 精选 Tab、全部动态、搜索、桌面小组件（今日精选）。
+
+**不适合：** 维护「完整精选库」。超过 7 天的条目会静默掉出窗口。
+
+| 查询参数 | 含义 | UI 用法 |
+| --- | --- | --- |
+| `mode` | `selected`（默认）精选；`all` 最近 7 天公开池 | 精选 / 公开池分段。公开池 ≠ 全库（不含部分来源、未审、低相关、已合并重复） |
+| `window` | `24h` / `7d`（默认 7d） | 产品默认 **24h**；另提供 7 天 |
+| `by` | `timeline`（默认，与网页一致）/ `published` | V1 固定 `timeline`，设置里可开「按原文时间」高级选项 |
+| `category` | 可选分类 | 顶部分类条 |
+| `q` | 2–200 个 Unicode 码点（先 trim） | 搜索框；不足 2 字不发请求 |
+| `limit` | 1–100，默认 50 | 列表页 50 |
+| `cursor` | 分页游标 | 上拉加载；与当前 query 绑定 |
+
+**响应 `ItemsResponse`**
+
+| 字段 | 中文含义 | 驱动 UI？ |
+| --- | --- | --- |
+| `schemaVersion` | 恒为 1 | 校验，不展示 |
+| `query.*` | 回显本次筛选 | 用于确认筛选芯片状态 |
+| `items[]` | 条目数组 | 列表主数据 |
+| `page.count` | 本页条数 | 无单独展示 |
+| `page.hasMore` | 是否还有下一页 | 决定是否上拉 |
+| `page.nextCursor` | 下一页游标或 null | 请求下一页 |
+
+**`Item` 字段**
+
+| 字段 | 中文含义 | 驱动 UI？ |
+| --- | --- | --- |
+| `id` | 条目 ID | 导航、已读、收藏主键 |
+| `title` | 中文标题 | 列表主标题、详情标题 |
+| `originalTitle` | 原始标题，可 null | 详情次行；与 title 相同则藏 |
+| `summary` | 摘要，可 null | 列表 2 行预览、详情正文区 |
+| `source.name` | 来源名称 | 列表左下、详情来源行 |
+| `links.aihot` | 站内阅读页 URL | 次要按钮「打开站内页」 |
+| `links.original` | 第三方原文 URL | **主按钮「打开原文」** |
+| `publishedAt` | 原文发布时间，可 null | 时间文案 |
+| `discoveredAt` | 接口首次收到时间 | `by=timeline` 时的排序依据；详情可显示「收录」 |
+| `category` | 分类，可 null | 色点/标签 |
+| `score` | 0–100 精选分，可 null | 详情次要信息；列表默认不强调，避免像「热度」 |
+| `selected` | 是否精选 | 公开池列表显示「精选」角标 |
+| `reason` | 推荐理由（与网页「推荐理由」相同） | **详情强调块**。仅 items 保证有；未精选或无理由时为 null。snapshot/changes **目前没有此字段** |
+| `attribution` | `{name, url}` 机器可读出处 | 存储保留；关于/调试可展示 |
+
+### 3.2 `GET /api/v1/hot-topics` — 当前热点榜
+
+**适合界面：** 热点 Tab（排行榜）。无查询参数。约 300s 共享缓存。
+
+**注意：** 条目数可以少于 10（实测可能只有 3 条）。`rank` 为 1-based，上限 10。不要展示不存在的热度数字。
+
+| 字段 | 中文含义 | 驱动 UI？ |
+| --- | --- | --- |
+| `rank` | 当前名次 | 左侧大号名次 |
+| `id` | 条目 ID（与 items 的 id 同形） | 尝试用本地 items 缓存补摘要；**不能**调用不存在的 `GET /items/{id}` |
+| `title` | 标题 | 主标题 |
+| `source.name` | 代表来源名 | 副文案 |
+| `links.aihot` / `links.original` | 站内页 / 原文 | 无事件时的详情 CTA |
+| `links.story` | **可选** 事件 HTML URL | **有则进入事件页**。从 URL **最后一段**取 `publicId`，请求 `/stories/{publicId}`。**禁止把该 URL 当 JSON 打。** 没有此字段时**不要编造** story id |
+| `sourceCount` | 覆盖信源数 | 「N 家来源」 |
+| `signalCount` | 信号数 | 次要；0 可隐藏 |
+| `sourceNames[]` | 来源名列表 | 详情来源云/折行文本 |
+| `latestAt` | 最近更新时间 | 「刚刚 / N 小时前」 |
+
+此端点**无 summary、无 reason、无 digest**。有 `links.story` 时，事件接口才是应用内「读得下去」的内容。
+
+### 3.3 `GET /api/v1/stories/{publicId}` — 事件（聚合报道）
+
+**适合界面：** 事件详情（热点的主阅读页）。`publicId` 只允许来自 `links.story` 或其它事件的 `storyline` / `related` 引用。
+
+**HTTP：** 合并后的事件返回 **308**，跟随 `Location` 到存活 id，并更新本地映射。404 = 公开事件层或该事件不可用。
+
+| 字段 | 中文含义 | 驱动 UI？ |
+| --- | --- | --- |
+| `publicId` | 事件 ID | 深链 |
+| `title` | 事件标题 | 大标题 |
+| `status` | `active` / `settled` | 「进行中 / 已收敛」胶囊 |
+| `sourceCount` / `reportCount` | 信源数 / 报道条数 | 标题下方元信息 |
+| `firstReportAt` / `latestAt` | 首次 / 最近报道时间 | 元信息 |
+| `latest` | 一句话最新进展 | 标题下导语 |
+| `digest` | AI 综述（随事件改写；与早期报道矛盾会写明），可 null | **主阅读区** |
+| `digestUpdatedAt` | 综述更新时间，可 null | 「综述更新于」 |
+| `links.aihot` | 事件站内 HTML | 「在浏览器打开事件页」 |
+| `reports[]` | 报道时间线（倒序） | 时间线列表 |
+| `storyline[]` / `related[]` | 同线 / 相关事件 | 底部分组 |
+
+**`StoryReport`**
+
+| 字段 | 驱动 UI |
+| --- | --- |
+| `id, title, summary` | 时间线条目 |
+| `source.name` + `source.firstParty` | 来源；`firstParty=true` 标「当事方」 |
+| `publishedAt` | 时间 |
+| `links.aihot` / `links.original`（original 可选） | 点条目 → 资讯卡片（用时间线已有摘要，不另请求正文） |
+
+**`StoryNeighbor`：** `publicId, title, relation, links.aihot, links.api`。点击用 `publicId` 再拉故事接口；`links.api` 勿当网页打开。
+
+### 3.4 日报三件套
+
+发布节奏：每天 **08:00 Asia/Shanghai** 一期。过去的日期报告**不可变**，可长期缓存、不必重拉。
+
+#### `GET /api/v1/dailies?limit=1…180`（默认 30）
+
+**适合：** 归档列表。不要一天轮询几十次。
+
+| 字段 | 中文含义 | 驱动 UI |
+| --- | --- | --- |
+| `date` | 上海日历日 YYYY-MM-DD | 行主标题左侧日期 |
+| `generatedAt` | 生成时间 | 次要 |
+| `leadTitle` / `leadParagraph` | 头题/导语，均可 null | 行标题与预览；null 时用「AI 日报 · {date}」 |
+| `links.aihot` | 该日网页 | 分享/外开 |
+| `attribution` | 出处 | 保留 |
+
+#### `GET /api/v1/dailies/latest` 与 `GET /api/v1/dailies/{date}`
+
+**适合：** 日报阅读页。只想最新一期时，可在 08:00 后拉 latest，不必全天狂刷。长期缓存 URL 的运行时：先 `dailies?limit=1` 再按返回日期取 `{date}`，**不要猜日期**。
+
+**`DailyReport`**
+
+| 字段 | 中文含义 | 驱动 UI |
+| --- | --- | --- |
+| `date, generatedAt, windowStart, windowEnd` | 日期与统计窗口 | 页眉 |
+| `links.aihot` | 网页版日报 | 分享 |
+| `lead` | `{title, leadParagraph}` 或 **null** | 头题；null 则跳过头题块（实测最新期可为 null） |
+| `sections[].label` | 分组名（如「行业动态」） | Section header，原文展示 |
+| `sections[].items[]` | `title, summary, source.name, links, attribution` | 分组卡片；`links.aihot` 可为 null |
+| `flashes[]` | 快讯：`title, source, links, publishedAt`（无 summary） | 「快讯」分组；空数组则整组隐藏 |
+
+日报条目**没有** `reason` / `score` / `category`。点击进入资讯卡片时，用日报已给的 title/summary/source/links，缺的字段留空。
+
+### 3.5 `GET /api/v1/selected/snapshot` + `.../changes` — 精选全量镜像协议
+
+**适合：** 后台增量同步（若做）。**不适合**当浏览首页。
+
+OpenAPI 原话：完整集合有**数千条且只增长**；小部件看今日精选应走 `/items`。
+
+| 要点 | 说明 |
+| --- | --- |
+| 首次 | `fields=default\|minimal`（默认 default）；`limit` 默认 500、最大 1000；用 `page=nextPage` 直到 `hasMore=false` |
+| `minimal` | 去掉 summary 与原文链接，体积约 1/4；**不能**支撑详情阅读。分页中途不可改 fields |
+| `cursor` | **每一页相同**，是第一页打的水位；全部页翻完后再拿去调 changes |
+| changes | `cursor` 必填；`upsert` / `remove`；先应用再保存新 cursor |
+| 409 `snapshot_required` | 唯一「不能续传」信号，整棵快照重拉 |
+| items 上的 `reason` | snapshot/changes **尚未包含** |
+
+**V1 产品决策：** 默认**不**做全量精选镜像，不在 UI 提供「全部历史精选」。需要离线时，缓存用户打开过的列表页、详情、已收藏对象、已读过的日报即可。避免把 App 做成精选历史库。
+
+### 3.6 API 明确没有的能力
+
+| 缺失 | 影响 |
+| --- | --- |
+| `GET /api/v1/items/{id}` 或任何单篇正文 | 详情只能用列表/日报/时间线里已经带的摘要 + 外链 |
+| 账号、收藏云端、已读云端 | 全部本机 |
+| 图片/封面字段 | 列表走文字信息流，不为空封面占位大图 |
+| 评论、点赞、关注源 | 不做社交 |
+| 周报/月报/主题/模型榜 API | 设置里可用 Safari 打开对应网页（可选，V1 可不做入口以免像官网套壳） |
+| SSE / Webhook | 无实时推送 |
+| 热度绝对值 | 热点只展示名次与信源数 |
+| 全文 RSS | 本客户端**不**改订 RSS 冒充 API 正文 |
+
+---
+
+## 4. 数据能力 → 功能映射
+
+| 用户功能 | 端点 | 模式 |
+| --- | --- | --- |
+| 今日/本周精选信息流 | `GET /items?mode=selected&window=24h\|7d` | 列表 + 分页 |
+| 公开池信息流 | `GET /items?mode=all&window=…` | 列表 |
+| 分类筛选 | `category=` | 同一列表 |
+| 关键词搜索（仅窗口内） | `q=`（2–200） | 搜索结果列表 |
+| 当前热点 | `GET /hot-topics` | 排行榜 |
+| 事件综述 + 多源时间线 | `GET /stories/{publicId}` | 详情 |
+| 今日日报 | `GET /dailies/latest` | 长文阅读 |
+| 往期日报 | `GET /dailies` → `GET /dailies/{date}` | 索引 + 阅读 |
+| 下拉刷新 / 静默刷新 | 各 URL + ETag | 304 不闪列表 |
+| 离线读最近内容 | 本地缓存上次 200 的 body | 非历史库 |
+| 本地收藏 / 已读 | SwiftData，不上云 | 本机 |
+| 全量精选镜像 | snapshot + changes | **V1 不做用户功能** |
+
+---
+
+## 5. 设计原则（给视觉与 SwiftUI）
+
+面向新闻阅读，风格：**系统原生 + 低铬 + 高对比正文**，不要玻璃拟态堆砌，不要 AI 紫科幻风。
+
+| 原则 | 规格 |
+| --- | --- |
+| 字体 | SF Pro；正文跟随 Dynamic Type；列表标题 17pt semibold，摘要 15pt regular，元信息 13pt secondary |
+| 颜色 | 浅色纸感底 `#F7F6F3`，正文近黑；深色用系统 grouped background。强调色 **Teal**（如 `#0F766E` / Dark `#2DD4BF`），与 AIHOT 官网视觉脱钩 |
+| 分类色 | 仅作 6×6pt 圆点 + 文字，不靠颜色单独表达（兼顾色觉） |
+| 触控 | 可点区域 ≥ 44×44pt，间距 ≥ 8pt；尊重 Home Indicator / Dynamic Island |
+| 动效 | 150–300ms；尊重「减弱动态效果」 |
+| 列表 | 无封面图；信息密度优先。超过约 50 行用懒加载单元格 |
+| 外链 | 一律 `SFSafariViewController`（iOS/iPad）/ `SafariServices` 或系统浏览器（Mac），**不要**用自定义浏览器外壳包官网，以免像换皮站 |
+| 导航 | iPhone 底栏 **4** 项（精选、热点、日报、我的）；搜索不是 Tab |
+
+---
+
+## 6. 整体信息架构与三端适配
+
+```
+AI 圈速览
+├── Tab 精选     GET /items
+│     ├── 搜索（同 Tab 内 sheet/overlay）
+│     └── 资讯卡片 ItemDetail
+├── Tab 热点     GET /hot-topics
+│     ├── 事件页 StoryDetail（有 links.story）
+│     │     ├── 报道 → ItemDetail（时间线已有字段）
+│     │     └── 相关事件 → 另一 StoryDetail
+│     └── 无 story → ItemDetail（热点字段 ± 本地 items 补全）
+├── Tab 日报     latest + 归档入口
+│     ├── 归档列表 GET /dailies
+│     └── 日报正文 DailyDetail → 条目 ItemDetail
+└── Tab 我的
+      ├── 本地收藏（条目 / 事件 / 日报）
+      ├── 设置
+      └── 关于
+```
+
+深链（自定义 URL，V1 实现）：
+
+| URL | 打开 |
+| --- | --- |
+| `aihotnews://feed` | 精选 |
+| `aihotnews://hot` | 热点 |
+| `aihotnews://item/{id}` | 资讯卡片（仅当本地缓存/收藏有该 id，否则提示并提供打开 `https://aihot.news/items/{id}`） |
+| `aihotnews://story/{publicId}` | 拉事件接口 |
+| `aihotnews://daily/{yyyy-mm-dd}` | 拉该日日报 |
+| `aihotnews://search?q=` | 打开精选搜索并填词 |
+
+不在 V1 做 Universal Links 绑定 `aihot.news`（容易被理解成官方 App）。
+
+### 6.1 iPhone
+
+- 底部 `TabView` 四项：精选 `newspaper`、热点 `flame`、日报 `calendar`、我的 `person`。
+- 各 Tab 内 `NavigationStack`。从列表 push 详情；系统侧滑返回、导航栏返回键均 pop。
+- 搜索：精选导航栏放大镜，进入后顶栏为搜索框，底栏仍在。
+- 外链：present Safari View，点完成 dismiss，回到原生详情。
+
+### 6.2 iPad
+
+- 使用 `NavigationSplitView`（双栏；13″ 横屏可用三栏）。
+- **侧栏（约 220pt）：** 精选、热点、日报、收藏、设置。选中态高亮。无底部 Tab。
+- **中间栏（约 320–380pt）：** 当前栏目的列表（精选信息流 / 热点榜 / 日报归档 / 收藏列表）。
+- **详情栏：** 未选时显示空态插画 +「从左侧选择一条」。选中后显示 Item / Story / Daily。
+- 分类条、24h/7d 分段放在**中间栏顶部**，不进侧栏，避免侧栏过长。
+- 外链可用分屏 Safari 或 Safari View；不要盖住整个 Split。
+
+### 6.3 Mac
+
+- 与 iPad 相同的 Split View；窗口最小约 900×600。
+- 系统菜单：**文件** 无；**显示** 刷新（⌘R）、查找（⌘F，仅精选栏目）。
+- 侧栏始终可见；列表支持方向键上下，Return 打开详情，Space 打开原文 Safari。
+- 触控板：两指返回由系统导航手势处理，不要自定义抢手势。
+
+三端**同一套屏幕规格**，只改壳（Tab vs Sidebar、栏目宽度）。
+
+---
+
+## 7. 逐屏界面规格
+
+坐标约定：上 = 靠近导航栏；下 = 靠近 Tab/窗口底；左 = 阅读起点。间距以 8pt 网格计。
+
+### 7.1 启动
+
+**元素**
+
+- 全屏系统启动图（纯色纸感 + 应用图标），无营销文案。
+- 无 Onboarding 轮播（无账号可讲）。
+
+**逻辑**
+
+- 冷启动：并行请求精选 24h 首页、hot-topics、dailies/latest（均带 ETag 若有本地）。
+- 有缓存：先渲染缓存再静默刷新，避免白屏。
+- 无缓存且失败：进入精选空错误态。
+
+### 7.2 精选 · 列表（主屏）
+
+**导航栏**
+
+- 左：标题「精选」（大标题 `navigationBarTitleDisplayMode = .large`，iPad 中间栏用 inline）。
+- 右：放大镜（搜索）、可选「筛选」若分类条折行不够。
+
+**导航栏正下方（吸顶，随列表上滑可收成 inline）**
+
+1. **分段 1（左对齐一组）：** `24 小时` | `7 天` → `window`。默认 24 小时。
+2. **分段 2：** `精选` | `公开池` → `mode`。默认精选。公开池旁 info 按钮，popovers：「公开池是最近 7 天可见动态，不是全站历史。」
+3. **分类横滑 Chip（下一行）：** 全部类型、模型、产品、行业、论文、技巧。选中填充强调色。未知 category 的条目仍显示，Chip 不预造。
+
+**主列表（全宽）**
+
+每一行 `ItemRow`，从上到下、从左到右：
+
+| 区域 | 内容 |
+| --- | --- |
+| 左上 | 分类圆点 + 分类中文（无 category 则只显示来源） |
+| 右上 | 相对时间（timeline：优先 discoveredAt；设置若改 published 则用 publishedAt） |
+| 主区 | `title`，最多 3 行 |
+| 主区下 | `summary` 最多 2 行，secondary 色；null 则省略 |
+| 底行左 | `source.name`，1 行截断 |
+| 底行右 | 精选 Tab 不显示 selected；公开池且 `selected=true` 显示小字「精选」 |
+| 整行 | 已读：标题改用 secondary 色（仍可点） |
+
+行分隔用系统 `List` inset grouped。无左滑「删除」。左滑可选 V1.1：收藏 / 已读。V1 收藏在详情工具栏完成。
+
+**列表底部**
+
+- `hasMore=true`：出现一行 ProgressView，进入可见区即请求 `cursor`。
+- `hasMore=false`：脚注「已到本时间窗末尾 · 仅最近 7 天」。
+
+**空 / 加载 / 错**
+
+见第 8 节共用状态。首次无缓存：列表区 8 行骨架（灰条，保留导航和筛选，避免整页转圈）。
+
+### 7.3 精选 · 搜索
+
+**元素位置**
+
+- 顶：系统 `searchable`。Placeholder：「搜索最近内容（2–200 字）」。
+- 其下：只读提示条「搜索范围与当前时间窗、精选/公开池、分类相同」。
+- 主区：结果仍用 `ItemRow`。
+
+**逻辑**
+
+- 输入 trim 后码点数 < 2：不请求，主区文案「至少输入两个字」。
+- ≥ 2：debounce 300ms 后带 `q` 重拉第一页。
+- 空结果：「没有找到符合条件的条目」+ 建议换时间窗或公开池。
+- 取消搜索：回到无 `q` 的列表，保留分段状态。
+
+### 7.4 资讯卡片 ItemDetail（无全文时的详情）
+
+本屏是 V1 所有「单篇」的统一形态。心理模型：**卡片 + 出门去原文**，不是文章阅读器。
+
+**导航栏**
+
+- 左：返回（iPhone）/ 无（iPad 详情栏）。
+- 中：空或来源名。
+- 右：星标收藏、分享。
+
+**滚动内容，从上到下**
+
+1. **元信息行：** 分类 · 来源名 · 相对时间。
+2. **标题：** `title`，大标题字体。
+3. **原始标题：** `originalTitle` 非空且不等于 title 时，用 secondary、一行或多行。
+4. **推荐理由块（有 `reason` 才出现）：** 浅强调色底的圆角卡片，左上小标题「为什么出现在精选」，其下理由正文。
+5. **摘要：** `summary`；null 则显示「暂无摘要，请阅读原文。」
+6. **事实提示：** 12–13pt，「摘要可能由自动化系统生成，数字与引语请以原文为准。」
+7. **主 CTA（全宽按钮，强调色）：** 「打开原文」→ Safari View 打开 `links.original`。无 original（minimal 快照或日报 aihot-only）则按钮禁用并解释。
+8. **次 CTA（边框按钮）：** 「打开站内页」→ Safari View 打开 `links.aihot`。文案不要写成「官方正文」。
+9. **次要元数据（折叠「更多信息」）：** 精选分 `score`、收录时间 `discoveredAt`、发布时间 `publishedAt`、id（可复制，给反馈用）。
+10. **若本地热点缓存里该 `id` 带 `links.story`：** 再显示一行「查看事件综述」→ push StoryDetail。
+
+**没有的东西：** WebView 嵌正文、自动抽取网页、假进度条「加载全文」。
+
+### 7.5 热点 · 列表
+
+**导航栏：** 大标题「热点」。无搜索（接口无 q）。右：无按钮或仅说明 info。
+
+**说明条（列表顶，可关一次）：** 「多源同时报道的当前事件，不是热度分数榜。」
+
+**行 `HotTopicRow`**
+
+| 位置 | 内容 |
+| --- | --- |
+| 左 44pt | 名次，1–3 用强调色，其余 primary |
+| 右栏上 | `title` 最多 3 行 |
+| 右栏中 | `sourceCount`「N 家来源」· 相对 `latestAt` |
+| 右栏下 | `sourceNames` 前 3 个 +「等」；有 `links.story` 显示小胶囊「有综述」 |
+
+整行 tappable。无分页（单响应）。
+
+### 7.6 事件页 StoryDetail
+
+这是应用内**唯一接近「长文」的资讯形态**。
+
+**导航栏：** 返回、收藏（按 publicId）、分享（优先 `links.aihot`，附带「非官方客户端」不强制）。
+
+**滚动，从上到下**
+
+1. 状态胶囊（进行中 / 已收敛）+ 「N 家来源 · M 条报道」。
+2. `title` 大标题。
+3. `latest` 作为导语，1 段。
+4. 「综述」小标题 + `digestUpdatedAt`。
+5. `digest` 多段正文（保留换行）。null 时：「暂无综述，可先看下方报道时间线。」
+6. 同样的事实提示条。
+7. 按钮：「打开事件站内页」。
+8. Section「报道时间线」：每条左时间、右标题+来源+`firstParty` 标「当事方」+ summary 最多 3 行。点整行 → ItemDetail（注入 report 字段）。
+9. Section「同一事件线」：`storyline`，空则隐藏。
+10. Section「相关」：`related`，空则隐藏。点行 → 新 StoryDetail（stack push）。
+
+**308：** 用户无感跟随；若收藏的是旧 id，更新为新 publicId。
+
+### 7.7 日报 · 首页
+
+**导航栏：** 「日报」。
+
+**上部（约屏幕上半在 iPhone 上不强制占满）：** 「最新」徽章 + `report.date`（中文日期）+ 窗口说明「统计区间以接口 windowStart/End 为准」。
+
+**其下：** 直接嵌入最新日报正文结构（与 DailyDetail 相同），避免「还要再点一次才看到今天」。
+
+**底部入口：** 全宽单元格「往期日报」→ 归档列表。
+
+**若 latest 404：** 「今日日报尚未发布」+ 仍提供往期入口。接入说明是 08:00 上海时间出刊。
+
+### 7.8 日报 · 归档列表
+
+**行：** 左日期（9月8日）、右 `leadTitle` 或占位「AI 日报」。`leadParagraph` 作 1 行预览，常为 null 则省略。
+
+`limit=30`，V1 不做无限翻到 180，设置「加载更多」再加大 limit 或二次请求。接口无 cursor，一次返回。
+
+### 7.9 日报 · 正文 DailyDetail
+
+（最新 Tab 内嵌与归档 push 共用组件。）
+
+1. 日期标题。
+2. 若 `lead != null`：头题 title + leadParagraph，视觉上比 section 条目更大。
+3. 每个 `section`：`label` 作 sticky header；条目卡片 = 标题 + 摘要 + 来源；点卡片 → ItemDetail。
+4. `flashes` 非空：header「快讯」；行只有标题+来源+时间；点行 → ItemDetail（无摘要）。
+5. 底：打开网页版日报。
+
+### 7.10 我的
+
+**分组 List**
+
+- 收藏：条目 N、事件 N、日报 N（进入各自子列表，行样式复用）。
+- 已读：仅「清除已读标记」，不做已读列表（噪音大）。
+- 设置：外观（跟随系统/浅/深）、默认时间窗、默认精选/公开池、按原文时间（`by=published`）、重置匿名 Actor、清除网络缓存。
+- 关于：产品名、版本、**不是官方产品**、条款链接、反馈可引导 `https://aihot.news/feedback`（Safari）。不放 AIHOT Logo。
+
+收藏子列表空态：「还没有收藏。在详情右上角点星标即可保存在这台设备上。」
+
+### 7.11 iPad / Mac 空详情栏
+
+居中对齐：简笔图标 +「选择一条资讯」+ 次要文字「摘要在这里读，全文在原文打开」。
+
+---
+
+## 8. 交互逻辑（含状态与系统行为）
+
+### 8.1 共用：加载 / 空 / 错 / 刷新
+
+| 状态 | 表现 | 操作 |
+| --- | --- | --- |
+| 首次加载无缓存 | 骨架屏，筛选可点但暂不改请求直到首包返回 | — |
+| 下拉刷新 | 系统刷新控件；间隔不足 s-maxage 仍允许用户手势，但客户端应带 ETag，304 则结束刷新且列表不抖 | 热点最少 300s 才有新共享副本，结束时可用 toast「已是最新」 |
+| 静默刷新 | 回前台且超过 s-maxage | 失败保留旧数据，不弹全屏错 |
+| 空成功 | 插画 +「这段时间没有条目」 | 主按钮「查看 7 天」 |
+| 网络失败有缓存 | 顶 banner「离线，正在显示缓存」 | 点 banner 重试 |
+| 网络失败无缓存 | 全屏错 + `detail` 友好化 + requestId 可复制 | 「重试」 |
+| 429 | banner「请求过于频繁，N 秒后自动重试」 | 禁用连点刷新 |
+| 400 `invalid_cursor` | 丢掉 cursor，从第一页重拉，toast「列表已更新」 | 不把错误甩给用户当故障 |
+| 列表分页失败 | 页脚「加载失败，点此重试」 | 不回滚已展示行 |
+
+### 8.2 点击矩阵
+
+| 用户动作 | 结果 |
+| --- | --- |
+| 点精选行 | push/split 显示 ItemDetail；写入已读 |
+| 点热点行且有 story | 解析 publicId → StoryDetail（先骨架后填充） |
+| 点热点行且无 story | ItemDetail；用热点字段，若本地 items 同 id 则合并 summary/reason |
+| 点「打开原文」 | Safari View，地址栏可见真实域名 |
+| 点「打开站内页」 | 同上，主机为 aihot.news 或响应里的 URL |
+| Safari View 完成 | 回到详情，不自动标已读第二次 |
+| 点星标 | 本机 upsert 收藏快照（当时的 JSON 字段）；再点取消 |
+| 分享 | `ShareLink`：标题 + original URL（无 original 则 aihot URL） |
+| 系统返回 / 侧滑 | pop；Safari View 打开时侧滑先关 Safari |
+| iPad 在侧栏换栏目 | 中间列表换数据；详情若仍属于新栏目则保留，否则清空 |
+| 深链 item 无本地数据 | Alert：「应用内没有这篇文章的摘要。」按钮「打开网页」/「取消」 |
+| 事件 404 | 详情栏错误 + 打开 `links.aihot` 若列表里有 |
+
+### 8.3 外链政策
+
+- 只打开 API 返回的 URI，不拼接用户输入去扫站。
+- 不在应用内注入阅读模式去抽第三方正文。
+- 用户从 Safari 自己打开 aihot.news 与本 App **无官方关联**，不劫持。
+
+### 8.4 系统返回与多窗口
+
+- iPhone：每个 Tab 保留自己的 `NavigationPath`。
+- iPad/Mac：允许第二个窗口再开一个 Split（系统默认），各窗口独立路径。
+- 不自定义 Android 式双击退出。
+
+---
+
+## 9. 缓存、离线、已读、本地收藏
+
+与条款「为运行、离线阅读、去重直接相关的合理私有缓存」对齐。
+
+| 数据类型 | 存什么 | 多久 | 删除 |
+| --- | --- | --- | --- |
+| 列表响应 | 完整 URL → body + ETag + 写入时间 | 以 s-maxage 为新鲜度；磁盘可留 7 天 | 清除缓存；或条目已不在最新响应且用户未收藏 |
+| 事件 | publicId → Story JSON + ETag | 有收藏则直到用户取消；否则 7 天 | 上游 404 则下线展示并删未收藏副本 |
+| 指定日期日报 | date → report | **可长期**（接口声明不可变） | 用户清除缓存时删未收藏日报 |
+| latest 日报 | 单独键 | 每次成功覆盖 | — |
+| 已读 | id / publicId / date 集合 | 本机永久直到用户清除 | 设置「清除已读」 |
+| 收藏 | 对象快照（便于离线） | 直到用户取消 | 取消收藏后，若未在 7 天列表缓存中则删除 payload |
+| Actor UUID | Keychain 或 App Group | 直到重置 | 重置后新 UUID |
+| items cursor | **内存 only** | 进程内 | 换筛选或跨日丢弃 |
+| snapshot 全量 | — | V1 不落库 | — |
+
+**禁止**
+
+- 「导出全部缓存为 JSON/CSV」给别人。
+- 把撤选/删除的内容继续当公开可搜历史（收藏除外，且收藏页标注「仅你设备上的副本」）。
+- 后台无限拉 snapshot 当爬虫。
+
+**离线体验**
+
+- 有缓存的 Tab 可完整滚动；点到未缓存的事件/往期日报 → 错误态 + 打开网页（若有链接）。
+- 收藏对象 100% 可离线打开卡片（不保证原文网页离线）。
+
+**后台刷新**
+
+- `BGAppRefresh` 最多刷新：精选 24h 第一页、hot-topics、latest daily。遵守 ETag 与 s-maxage。失败静默。
+
+---
+
+## 10. 网络层备忘（给开发，非界面）
+
+| 项 | 值 |
+| --- | --- |
+| User-Agent | `AIHotNews/<CFBundleShortVersionString> (iOS\|iPadOS\|macOS) aihot-actor/<uuid>` |
+| 解码 | `Item.reason` 可选；`HotTopic.links.story` 可选；`DailyReport.lead` 可 null |
+| story URL | 取 `URL.path` 最后非空 path component 为 publicId |
+| 304 | 不要把 body 当空数组渲染 |
+| schemaVersion | ≠1 仍尝试解析已知字段，sentry/日志记录 |
+| 旧 API | 禁止 `/api/public/*` |
+
+限流数字以接入页为准；实现上以响应头为准，不要写死「每分钟 N 次」却短于 s-maxage。
+
+---
+
+## 11. 无障碍与系统能力
+
+- 所有图标按钮有 `accessibilityLabel`（搜索、收藏、分享、打开原文）。
+- 名次不只靠颜色：VoiceOver 读「第 N 名」。
+- 已读状态要被辅助功能读出。
+- 支持 Dynamic Type，列表允许标题换行，不把正文锁死 11pt。
+- iPad 指针悬停用系统 hover；不把 hover 当唯一可发现性。
+- 可选 V1.1：精选 24h 桌面小组件（仍走 `/items`，不是 snapshot）。
+
+---
+
+## 12. 成功标准（产品）
+
+规划阶段指标，上架后才有真实数据：
+
+| 指标 | V1 期望 |
+| --- | --- |
+| 打开 App 后 2 秒内看到精选标题（有缓存） | 是 |
+| 用户能在不离开「摘要+理由」的情况下决定是否打开原文 | 是（理由块 + 主 CTA） |
+| 热点有 story 的条目 100% 进综述而非空白卡片 | 是 |
+| 设置/关于能明确读到「非官方」 | 是 |
+| 无登录漏斗、无广告曝光 | 是 |
+| 不提供可分享的「全库导出」 | 是 |
+
+---
+
+## 13. 建议实现顺序
+
+1. 网络客户端：ETag、Problem JSON、items 列表 + 分类/窗口。
+2. ItemDetail（摘要+理由+双 CTA）+ Safari View。
+3. 热点列表 + StoryDetail（308/404）。
+4. 日报 latest + 归档。
+5. 本机已读/收藏/离线缓存。
+6. iPad/Mac Split 适配、键盘、设置关于。
+7. 深链、后台刷新、无障碍走查。
+
+当前仓库仍是 Xcode SwiftData 模板（`ContentView` / `Item`），实现时替换模板列表，**不要**把模板 `Item.timestamp` 当资讯模型。
+
+---
+
+## 14. 关键产品决策摘要
+
+1. **四个入口：** iPhone 底栏「精选 / 热点 / 日报 / 我的」；iPad/Mac 左侧栏同一信息架构，右详情。搜索挂在精选，不占第五 Tab。
+2. **无全文时详情就是「资讯卡片」：** 标题、摘要、推荐理由、来源，主按钮打开第三方原文，次按钮打开站内阅读页；禁止抓 HTML 当正文。
+3. **有 `links.story` 的热点进事件页：** 综述 + 报道时间线才是应用内深度阅读；publicId 只从 URL 末段取。
+4. **不做全量精选历史库：** 浏览只用 24h/7d 的 `/items`；收藏与最近响应缓存仅本机。搜索对用户诚实：「仅当前时间窗」。
+5. **品牌隔离：** 显示名「AI 圈速览」，强调色自有 Teal，关于页写明非官方；来源名与原文链始终可见。
