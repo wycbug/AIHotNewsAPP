@@ -43,6 +43,7 @@ final class AIHotNewsUITests: XCTestCase {
         XCTAssertTrue(article.waitForExistence(timeout: 5))
         article.tap()
         XCTAssertTrue(app.staticTexts["内容摘要"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "完整中文译文")).firstMatch.exists)
         XCTAssertTrue(app.buttons["取消收藏"].exists)
         capture("05-offline-bookmark", app)
     }

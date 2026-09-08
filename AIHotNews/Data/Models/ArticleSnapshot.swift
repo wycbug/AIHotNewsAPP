@@ -78,6 +78,16 @@ nonisolated struct ArticleSnapshot: Codable, Hashable, Sendable, Identifiable {
         }
         return original.absoluteString
     }
+
+    /// 列表摘要行数。精选信息流保持 2 行预览；事件时间线按规格 3 行；日报分区展示接口已给的完整摘要。详情页不截断。
+    nonisolated func listSummaryLineLimit(isAccessibilitySize: Bool) -> Int? {
+        if isAccessibilitySize { return nil }
+        switch origin {
+        case .dailyItem, .flash: return nil
+        case .report: return 3
+        default: return 2
+        }
+    }
 }
 
 nonisolated enum ArticleOrigin: Codable, Hashable, Sendable {
