@@ -407,6 +407,130 @@ struct FeatureStateTests {
         #expect(model.message?.hasPrefix("离线") == true)
     }
 
+    @Test func searchValidationBoundsAndRequestNormalization() {
+        let model = FeedViewModel(repository: NewsRepository(client: APIClient(transport: StubTransport([]))))
+        #expect(model.searchValidation == nil)
+        #expect(model.request.q == nil)
+        model.searchText = "  \n "
+        #expect(model.request.q == nil)
+        #expect(model.searchValidation == nil)
+        model.searchText = " a "
+        #expect(model.request.q == "a")
+        #expect(model.searchValidation != nil)
+        model.searchText = " 模型 "
+        #expect(model.request.q == "模型")
+        #expect(model.searchValidation == nil)
+        model.searchText = String(repeating: "很", count: 201)
+        #expect(model.searchValidation != nil)
+        model.searchText = ""
+        model.query.category = "paper"
+        #expect(model.request.category == "paper")
+        #expect(model.request.limit == 50)
+    }
+
+    @Test func invalidSearchNeverHitsNetwork() async {
+        let transport = StubTransport([])
+        let model = FeedViewModel(repository: NewsRepository(client: APIClient(transport: transport)))
+        model.searchText = "a"
+        await model.load()
+        #expect(model.items.isEmpty)
+        #expect(!model.isLoading)
+        #expect(model.message == nil)
+        #expect(await transport.requests.isEmpty)
+    }
+
+    @Test func refreshIfIdleSkipsWhileSearchIsActive() async {
+        let transport = StubTransport([])
+        let model = FeedViewModel(repository: NewsRepository(client: APIClient(transport: transport)))
+        model.searchText = "模型"
+        await model.refreshIfIdle()
+        #expect(await transport.requests.isEmpty)
+    }
+
+    @Test func sameResourceReloadKeepsDisplayedValue() async throws {
+        let transport = FeatureGateTransport([
+            .init(body: dailiesBody(1)),
+            .init(body: dailiesBody(2), held: true)
+        ])
+        let model = ResourceViewModel<DailiesResponse>(repository: NewsRepository(client: APIClient(transport: transport)))
+        await model.load(try .dailies(limit: 1))
+        let reloading = Task { await model.load(try! .dailies(limit: 1), reload: true) }
+        let started = await transport.waitForRequests(2)
+        #expect(started)
+        #expect(model.value?.count == 1)
+        #expect(model.isLoading)
+        await transport.release(1)
+        await reloading.value
+        #expect(model.value?.count == 2)
+        #expect(!model.isLoading)
+    }
+
+    @Test func resourceNotFoundRestoresInitialValue() async throws {
+        let initial = DailiesResponse(schemaVersion: 1, count: 7, items: [])
+        let transport = StubTransport([.response(404, [:], problemBody(code: "not_found", status: 404))])
+        let model = ResourceViewModel<DailiesResponse>(
+            repository: NewsRepository(client: APIClient(transport: transport)),
+            initialValue: initial
+        )
+        await model.load(try .dailies())
+        #expect(model.value?.count == 7)
+        #expect(model.failure?.isNotFound == true)
+        #expect(model.message != nil)
+        #expect(!model.isLoading)
+    }
+
+    @Test func resourceShowErrorPublishesMessage() {
+        let model = ResourceViewModel<DailiesResponse>(repository: NewsRepository(client: APIClient(transport: StubTransport([]))))
+        model.showError(APIError.decoding)
+        #expect(model.message == APIError.decoding.localizedDescription)
+    }
+
+    @Test func displayErrorAnnotatesOfflineAndRequestID() {
+        let cached = displayError(APIError.transport(.notConnectedToInternet), hasContent: true)
+        #expect(cached.hasPrefix("离线，正在显示缓存"))
+        let bare = displayError(APIError.transport(.notConnectedToInternet), hasContent: false)
+        #expect(!bare.hasPrefix("离线，正在显示缓存"))
+        let identified = displayError(APIError.http(status: 500, requestID: "req-9", retryAt: nil), hasContent: true)
+        #expect(identified.contains("请求编号：req-9"))
+        let problem = APIProblem(type: "about:blank", title: "T", status: 400,
+                                 detail: "参数错误", code: "bad", requestId: "")
+        #expect(!displayError(APIError.problem(problem, retryAt: nil), hasContent: false).contains("请求编号"))
+    }
+
+    @Test func retryMessageIncludesCountdown() {
+        let message = retryMessage(APIError.rateLimited(until: .now.addingTimeInterval(120)))
+        #expect(message.hasPrefix("服务暂不可用，"))
+        #expect(message.contains("秒后自动重试"))
+    }
+
+    @Test func cacheMessageReflectsResponseSource() {
+        let response = ItemsResponse(
+            schemaVersion: 1,
+            query: ItemsQueryEcho(mode: "selected", category: nil, window: "24h", q: nil,
+                                  by: "timeline", ordering: "timelineDesc"),
+            items: [],
+            page: Page(count: 0, hasMore: false, nextCursor: nil)
+        )
+        let url = URL(string: "https://aihot.news/api/v1/items")!
+        func result(_ source: ResponseSource, stale: APIError? = nil) -> APIResult<ItemsResponse> {
+            APIResult(value: response, source: source, fetchedAt: Date(), staleError: stale, resolvedURL: url)
+        }
+        #expect(cacheMessage(result(.network)).hasPrefix("更新于"))
+        #expect(cacheMessage(result(.revalidated)).hasPrefix("更新于"))
+        #expect(cacheMessage(result(.cache)).hasPrefix("正在显示缓存 ·"))
+        let offline = cacheMessage(result(.offline, stale: .transport(.notConnectedToInternet)))
+        #expect(offline.hasPrefix("离线，正在显示缓存（"))
+        #expect(offline.contains("无法连接网络"))
+    }
+
+    @Test func shanghaiDateStringCrossesMidnightInShanghai() {
+        let formatter = ISO8601DateFormatter()
+        let before = formatter.date(from: "2026-09-08T15:59:59Z")!
+        let after = formatter.date(from: "2026-09-08T16:00:00Z")!
+        #expect(shanghaiDateString(before) == "2026-09-08")
+        #expect(shanghaiDateString(after) == "2026-09-09")
+    }
+
     private func itemsBody(_ ids: [String], cursor: String?) throws -> Data {
         let items: [[String: Any]] = ids.map { id in
             ["id": id, "title": id, "originalTitle": NSNull(), "summary": NSNull(),

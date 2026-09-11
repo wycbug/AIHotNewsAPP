@@ -284,6 +284,119 @@ struct NetworkingTests {
         #expect(await cache.value(for: a, now: now) == nil)
         #expect(await cache.value(for: b, now: now.addingTimeInterval(2)) == nil)
     }
+
+    @Test func nonJSONContentTypeIsRejected() async {
+        let client = APIClient(transport: StubTransport([.response(200, ["Content-Type": "text/plain"], hotBody)]))
+        await #expect(throws: APIError.self) { _ = try await client.fetch(.hotTopics()) }
+        #expect(await client.cached(.hotTopics()) == nil)
+    }
+
+    @Test func cacheOnlyMissThrowsCacheMiss() async {
+        let client = APIClient(transport: StubTransport([]))
+        do {
+            _ = try await client.fetch(.hotTopics(), policy: .cacheOnly)
+            Issue.record("Expected cache miss")
+        } catch APIError.cacheMiss {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func serviceUnavailableAlsoSharesRetryDeadlineAcrossEndpoints() async throws {
+        let clock = TestClock()
+        let body = Data(#"{"type":"about:blank","title":"Unavailable","status":503,"detail":"Maintenance","code":"maintenance","requestId":"r"}"#.utf8)
+        let transport = StubTransport([.response(503, ["Retry-After": "90"], body), .response(200, [:], hotBody)])
+        let client = APIClient(transport: transport, now: { clock.now })
+        await #expect(throws: APIError.self) { _ = try await client.fetch(.hotTopics()) }
+        do {
+            _ = try await client.fetch(.latestDaily())
+            Issue.record("Expected shared cooldown")
+        } catch APIError.rateLimited(let until) {
+            #expect(until == clock.now.addingTimeInterval(90))
+        }
+        #expect(await transport.requests.count == 1)
+        clock.advance(91)
+        _ = try await client.fetch(.hotTopics())
+        #expect(await transport.requests.count == 2)
+    }
+
+    @Test func problemRequestIDFallsBackToResponseHeader() async {
+        let body = Data(#"{"type":"about:blank","title":"Bad","status":400,"detail":"d","code":"bad","requestId":""}"#.utf8)
+        let client = APIClient(transport: StubTransport([.response(400, ["X-Request-Id": "header-id"], body)]))
+        do {
+            _ = try await client.fetch(.hotTopics())
+            Issue.record("Expected problem")
+        } catch APIError.problem(let problem, _) {
+            #expect(problem.requestId == "header-id")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func malformedProblemBodyFallsBackToHTTPError() async {
+        let client = APIClient(transport: StubTransport([.response(400, ["X-Request-Id": "header-id"], Data(#"{"title":"Bad"}"#.utf8))]))
+        do {
+            _ = try await client.fetch(.hotTopics())
+            Issue.record("Expected HTTP error")
+        } catch APIError.http(let status, let requestID, let retryAt) {
+            #expect(status == 400)
+            #expect(requestID == "header-id")
+            #expect(retryAt == nil)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func futureSchemaVersionStillDecodes() async throws {
+        let body = Data(#"{"schemaVersion":2,"count":0,"items":[],"future":true}"#.utf8)
+        let client = APIClient(transport: StubTransport([.response(200, [:], body)]))
+        let result = try await client.fetch(APIEndpoint<HotTopicsResponse>.hotTopics())
+        #expect(result.value.schemaVersion == 2)
+        #expect(result.source == .network)
+    }
+
+    @Test func redirectOnNonStoryPathIsRejected() async {
+        let client = APIClient(transport: StubTransport([.response(308, ["Location": "/api/v1/stories/abc"], Data())]))
+        await #expect(throws: APIError.self) { _ = try await client.fetch(.hotTopics()) }
+    }
+
+    @Test func removingCanonicalURLEvictsOriginalRequestURL() async throws {
+        let cache = ResponseCache.memory()
+        let now = Date()
+        let requested = try APIEndpoint<StoryResponse>.story(publicID: "old").url
+        let canonical = try APIEndpoint<StoryResponse>.story(publicID: "new").url
+        let entry = CachedResponse(body: hotBody, etag: nil, validatedAt: now, freshUntil: now,
+                                   expiresAt: now.addingTimeInterval(60), cacheControl: "", resolvedURL: canonical)
+        try await cache.insert(entry, for: requested, persist: false)
+        #expect(await cache.value(for: requested, now: now) != nil)
+        try await cache.remove(canonical)
+        #expect(await cache.value(for: requested, now: now) == nil)
+        try await cache.remove(requested)
+    }
+
+    @Test func cacheControlDirectiveParsingHandlesQuotesAndBareTokens() {
+        let parsed = HTTPHeaders.directives(#"public, s-maxage="300", no-cache"#)
+        #expect(parsed["public"] == "")
+        #expect(parsed["s-maxage"] == "300")
+        #expect(parsed["no-cache"] == "")
+        #expect(HTTPHeaders.directives("S-MaxAge=10")["s-maxage"] == "10")
+        #expect(HTTPHeaders.directives("") == [:])
+    }
+
+    @Test func freshnessPrefersSharedMaxAgeAndClampsAgainstAge() {
+        let url = URL(string: "https://aihot.news/api/v1/hot-topics")!
+        let aged = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Age": "50"])!
+        #expect(HTTPHeaders.freshness("max-age=100, s-maxage=300", response: aged, fallback: 5) == 250)
+        #expect(HTTPHeaders.freshness("max-age=40", response: aged, fallback: 5) == 0)
+        #expect(HTTPHeaders.freshness("", response: aged, fallback: 5) == 0)
+    }
+
+    @Test func retryAfterAcceptsPaddedNumbersAndClampsPastDates() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        #expect(HTTPHeaders.retryDate(" 30 ", now: now) == now.addingTimeInterval(30))
+        #expect(HTTPHeaders.retryDate("Wed, 31 Dec 1969 23:00:00 GMT", now: now) == now)
+        #expect(HTTPHeaders.retryDate(nil, now: now) == nil)
+    }
 }
 
 actor StubTransport: HTTPTransport {

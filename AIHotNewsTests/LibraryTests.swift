@@ -138,10 +138,108 @@ struct LibraryTests {
         #expect(ReaderDeepLink(url: try #require(components.url)) == nil)
     }
 
+    @Test func deepLinksCoverTabAndContentRoutes() {
+        #expect(ReaderDeepLink(url: URL(string: "aihotnews://hot")!) == .hot)
+        #expect(ReaderDeepLink(url: URL(string: "aihotnews://daily")!) == .dailyHome)
+        #expect(ReaderDeepLink(url: URL(string: "aihotnews://my")!) == .personal)
+        #expect(ReaderDeepLink(url: URL(string: "aihotnews://story/abc-1")!) == .story("abc-1"))
+        for value in ["aihotnews://item", "aihotnews://story/", "aihotnews://feed/extra",
+                      "aihotnews://my/1", "aihotnews://daily/2024-02-30", "aihotnews://daily/2024-1-01"] {
+            #expect(ReaderDeepLink(url: URL(string: value)!) == nil, "应拒绝 \(value)")
+        }
+    }
+
+    @Test func libraryKeysCanonicalizeArticleKindAndFormatShanghaiDates() {
+        #expect(LibraryKey.canonicalKind("article") == "item")
+        #expect(LibraryKey.canonicalKind("item") == "item")
+        #expect(LibraryKey.canonicalKind("story") == "story")
+        #expect(LibraryKey.make(kind: "article", id: "x") == "item:x")
+        let formatter = ISO8601DateFormatter()
+        let before = formatter.date(from: "2026-09-08T15:59:59Z")!
+        let after = formatter.date(from: "2026-09-08T16:00:00Z")!
+        #expect(LibraryKey.dailyID(before) == "2026-09-08")
+        #expect(LibraryKey.dailyID(after) == "2026-09-09")
+    }
+
+    @Test func bookmarkCanonicalizesKindAndReadKeySharing() throws {
+        let container = try storage()
+        let context = ModelContext(container)
+        context.insert(Bookmark(kind: "article", publicID: "a", title: "t", payload: Data("null".utf8)))
+        try context.save()
+        let library = LibraryStore(context: context)
+        #expect(library.isSaved(kind: "article", id: "a"))
+        #expect(library.isSaved(kind: "item", id: "a"))
+        #expect(library.bookmarks.first?.kind == "item")
+        #expect(library.bookmarks.first?.key == "item:a")
+    }
+
+    @Test func dailyBookmarkUsesShanghaiDateAndLeadTitle() throws {
+        let container = try storage()
+        let library = LibraryStore(context: ModelContext(container))
+        let withLead = try dailyReport(lead: true)
+        library.toggleDaily(withLead)
+        #expect(library.isSaved(kind: "daily", id: "2026-09-08"))
+        #expect(library.bookmarks.first?.title == "头题")
+        #expect(library.bookmarks.first?.key == "daily:2026-09-08")
+        library.toggleDaily(withLead)
+        #expect(library.bookmarks.isEmpty)
+        let bare = try dailyReport(lead: false)
+        library.toggleDaily(bare)
+        #expect(library.bookmarks.first?.title == "AI 日报 · 2026-09-08")
+    }
+
+    @Test func markReadIsIdempotentAndRemoveKeepsReadMark() throws {
+        let container = try storage()
+        let library = LibraryStore(context: ModelContext(container))
+        library.markRead(kind: "item", id: "a")
+        library.markRead(kind: "item", id: "a")
+        #expect(library.readKeys == ["item:a"])
+        let article = ArticleSnapshot(id: "a", title: "t", source: "s")
+        library.toggleArticle(article)
+        let bookmark = try #require(library.bookmarks.first)
+        library.remove(bookmark)
+        #expect(library.bookmarks.isEmpty)
+        #expect(!library.isSaved(kind: "item", id: "a"))
+        #expect(library.isRead(kind: "item", id: "a"))
+    }
+
+    @Test func storyAliasChainFollowsSequentialMerges() throws {
+        let container = try storage()
+        let library = LibraryStore(context: ModelContext(container))
+        library.toggleStory(try story("v1"))
+        library.reconcileStory(previousID: "v1", story: try story("v2"))
+        library.reconcileStory(previousID: "v2", story: try story("v3"))
+        #expect(library.bookmarks.count == 1)
+        #expect(library.bookmark(forKey: "story:v1")?.publicID == "v3")
+        #expect(library.bookmark(forKey: "story:v2")?.publicID == "v3")
+        #expect(library.isSaved(kind: "story", id: "v3"))
+        library.reconcileStory(previousID: "v3", story: try story("v3"))
+        #expect(library.bookmarks.count == 1)
+    }
+
+    @Test func corruptBookmarkPayloadReportsDecodeFailure() throws {
+        let container = try storage()
+        let context = ModelContext(container)
+        context.insert(Bookmark(kind: "item", publicID: "bad", title: "坏副本", payload: Data("not json".utf8)))
+        try context.save()
+        let library = LibraryStore(context: context)
+        let bookmark = try #require(library.bookmarks.first)
+        #expect(library.decode(ArticleSnapshot.self, from: bookmark) == nil)
+        #expect(library.errorMessage != nil)
+    }
+
     private func story(_ id: String) throws -> Story {
         let body = Data("""
         {"schemaVersion":1,"story":{"publicId":"\(id)","title":"事件","status":"active","sourceCount":1,"reportCount":1,"firstReportAt":"2026-09-08T00:00:00Z","latestAt":"2026-09-08T01:00:00Z","latest":"进展","digest":"综述","digestUpdatedAt":null,"links":{"aihot":"https://aihot.news/story/\(id)"},"reports":[],"storyline":[],"related":[]}}
         """.utf8)
         return try APIJSON.decoder().decode(StoryResponse.self, from: body).story
+    }
+
+    private func dailyReport(lead: Bool) throws -> DailyReport {
+        let leadJSON = lead ? #"{"title":"头题","leadParagraph":"导语"}"# : "null"
+        let body = Data("""
+        {"schemaVersion":1,"report":{"date":"2026-09-08","generatedAt":"2026-09-08T00:00:00Z","windowStart":"2026-09-07T00:00:00Z","windowEnd":"2026-09-08T00:00:00Z","links":{"aihot":"https://aihot.news/daily/2026-09-08"},"lead":\(leadJSON),"sections":[],"flashes":[]}}
+        """.utf8)
+        return try APIJSON.decoder().decode(DailyResponse.self, from: body).report
     }
 }
