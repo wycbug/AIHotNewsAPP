@@ -1,1 +1,20 @@
+# macOS
+.DS_Store
+
+# Xcode 用户状态与本地构建产物
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+DerivedData/
+
+# Swift Package Manager 本地构建
+.build/
+.swiftpm/
+
+# 发布产物
+*.ipa
+*.dSYM.zip
+*.app
+
+# 本地草稿（工具生成，勿提交）
 draft_*_folder/
