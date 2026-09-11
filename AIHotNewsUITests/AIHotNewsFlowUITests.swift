@@ -27,6 +27,32 @@ final class AIHotNewsFlowUITests: XCTestCase {
         add(attachment)
     }
 
+#if os(macOS)
+    @MainActor
+    func testMacFeedFiltersRemainAccessibleAfterSearch() throws {
+        let app = launch()
+        let modelsChip = app.buttons["模型"]
+        XCTAssertTrue(modelsChip.waitForExistence(timeout: 15))
+        modelsChip.click()
+        XCTAssertTrue(modelsChip.isSelected)
+        app.radioButtons["7 天"].click()
+        app.radioButtons["公开池"].click()
+        XCTAssertTrue(app.buttons["公开池不是全站历史"].waitForExistence(timeout: 5))
+
+        let search = app.searchFields.firstMatch
+        search.click()
+        search.typeText("model")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "没有找到符合条件的条目"))
+            .firstMatch.waitForExistence(timeout: 10))
+        search.buttons["取消"].click()
+        XCTAssertTrue(modelsChip.isSelected)
+        app.buttons["全部类型"].click()
+        XCTAssertFalse(modelsChip.isSelected)
+        XCTAssertTrue(app.buttons["公开池不是全站历史"].exists)
+        capture("28-mac-feed-filters-search")
+    }
+#endif
+
     @MainActor
     func testCategoryChipSelectionAndPoolNotice() throws {
         let app = launch()

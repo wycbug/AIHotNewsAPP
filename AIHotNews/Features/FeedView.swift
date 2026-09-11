@@ -12,6 +12,7 @@ struct FeedView: View {
 
     var body: some View {
         List {
+#if !os(macOS)
             // 筛选跟列表一起滚动。钉在 safeAreaInset 时，大标题下拉出现的系统搜索栏会叠住分段控件。
             Section {
                 filters
@@ -20,6 +21,7 @@ struct FeedView: View {
             .listRowSeparator(.hidden)
             .listSectionSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+#endif
 
             if isSearching || model.request.q != nil {
                 Section {
@@ -55,6 +57,12 @@ struct FeedView: View {
         .listStyle(.insetGrouped)
 #else
         .listStyle(.inset)
+        // macOS List 行内嵌套筛选控件会在辅助功能读取几何信息时触发 AttributeGraph 循环。
+        .safeAreaInset(edge: .top, spacing: 0) {
+            filters
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+        }
 #endif
         .readerBackground()
         .navigationTitle("精选")
@@ -100,8 +108,8 @@ struct FeedView: View {
                     modePicker
                 }
             }
-            ScrollView(.horizontal, showsIndicators: false) {
-                GlassEffectContainer(spacing: 8) {
+            GlassEffectContainer(spacing: 8) {
+                ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(categories, id: \.self) { category in
                             CategoryChip(category: category, selected: model.query.category == category) {
@@ -235,8 +243,7 @@ struct FeedView: View {
             ProgressView("正在加载更多…")
                 .font(.footnote)
                 .frame(maxWidth: .infinity, minHeight: 44)
-                .task(id: "\(model.nextCursor ?? "")-\(model.isLoading)") {
-                    guard !model.isLoading else { return }
+                .task(id: model.nextCursor) {
                     await model.loadMore()
                 }
         } else {
