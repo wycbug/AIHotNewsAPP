@@ -133,11 +133,11 @@ private struct BookmarkRow: View {
                 HStack {
                     Text(source ?? "本机副本").lineLimit(1)
                     Spacer(minLength: 12)
-                    Text(bookmark.savedAt, format: .dateTime.month().day()) + Text(" 收藏")
+                    Text("\(bookmark.savedAt, format: .dateTime.month().day()) 收藏")
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text(source ?? "本机副本")
-                    Text(bookmark.savedAt, format: .dateTime.month().day()) + Text(" 收藏")
+                    Text("\(bookmark.savedAt, format: .dateTime.month().day()) 收藏")
                 }
             }
             .font(.caption).foregroundStyle(.secondary)
@@ -253,6 +253,7 @@ private struct LibraryListSurface: ViewModifier {
 #else
             .listStyle(.inset)
 #endif
+            .scrollEdgeEffectStyle(.soft, for: .top)
             .scrollContentBackground(.hidden)
             .background(colorScheme == .dark ? Color.black.opacity(0.15) : Color(red: 247 / 255, green: 246 / 255, blue: 243 / 255))
             .tint(colorScheme == .dark ? Color(red: 45 / 255, green: 212 / 255, blue: 191 / 255) : LibraryPalette.teal)

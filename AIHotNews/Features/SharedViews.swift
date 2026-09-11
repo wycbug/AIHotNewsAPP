@@ -75,7 +75,7 @@ struct LoadStatusView: View {
                                     .padding(.horizontal, 12)
                                     .frame(minHeight: 44)
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.glass)
                             .disabled(isLoading || isRetrying || (retryAt.map { $0 > context.date } ?? false))
                         }
                     }
@@ -354,11 +354,11 @@ struct ArticleDetailView: View {
                 Link(destination: original) {
                     Label("打开原文", systemImage: "arrow.up.right.square")
                         .font(.headline)
-                        .frame(maxWidth: .infinity, minHeight: 52)
-                        .foregroundStyle(ReaderTheme.accentForeground(for: colorScheme))
-                        .background(ReaderTheme.accent, in: RoundedRectangle(cornerRadius: 14))
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.glassProminent)
+                .controlSize(.large)
+                .tint(ReaderTheme.accent)
                 Text(original.host() ?? original.absoluteString)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -367,9 +367,10 @@ struct ArticleDetailView: View {
                 Button {} label: {
                     Label("打开原文", systemImage: "arrow.up.right.square")
                         .font(.headline)
-                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
+                .controlSize(.large)
                 .disabled(true)
                 Text("此条目未提供原文链接，可查看站内页。")
                     .font(.footnote)
@@ -379,12 +380,10 @@ struct ArticleDetailView: View {
                 Link(destination: aihot) {
                     Label("打开站内页", systemImage: "safari")
                         .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                        .foregroundStyle(ReaderTheme.accent)
-                        .background(ReaderTheme.surface(for: colorScheme), in: RoundedRectangle(cornerRadius: 14))
-                        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(ReaderTheme.accent.opacity(0.3)))
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.glass)
+                .controlSize(.large)
             }
         }
     }

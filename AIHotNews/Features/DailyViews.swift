@@ -36,6 +36,14 @@ struct DailyHomeView: View {
             if let report = container.latestDaily.value?.report {
                 DailySaveButton(report: report)
             }
+#if os(macOS)
+            Button { Task { await container.latestDaily.load(.latestDaily(), reload: true) } } label: {
+                Label("刷新", systemImage: "arrow.clockwise")
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(container.latestDaily.isLoading)
+#endif
         }
         .task { await container.latestDaily.load(.latestDaily()) }
         .onChange(of: container.latestDaily.value?.report.date, initial: true) { _, date in
@@ -82,10 +90,12 @@ struct DailyArchiveView: View {
                         .padding(.vertical, 10)
                     }
                 }
-                if response.items.count >= limit && limit < 180 {
+                if model.isLoading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                } else if response.items.count >= limit && limit < 180 {
                     Button("查看更多往期") { limit = min(limit + 30, 180) }
                         .frame(maxWidth: .infinity, minHeight: 44)
-                        .disabled(model.isLoading)
                 } else {
                     Text("已展示当前可用日报").font(.footnote).foregroundStyle(.secondary)
                 }
@@ -95,6 +105,16 @@ struct DailyArchiveView: View {
         }
         .readerBackground()
         .navigationTitle("往期日报")
+#if os(macOS)
+        .toolbar {
+            Button { Task { await load(reload: true) } } label: {
+                Label("刷新", systemImage: "arrow.clockwise")
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(model.isLoading)
+        }
+#endif
         .task(id: limit) { await load() }
         .refreshable { await load(reload: true) }
     }
@@ -162,6 +182,14 @@ struct DailyDetailView: View {
                 ShareLink(item: report.links.aihot, subject: Text("AI 日报 · \(date)"))
                     .accessibilityLabel("分享日报")
             }
+#if os(macOS)
+            Button { Task { await load(reload: true) } } label: {
+                Label("刷新", systemImage: "arrow.clockwise")
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(model.isLoading)
+#endif
         }
         .task { await load() }
         .refreshable { await load(reload: true) }
@@ -245,8 +273,10 @@ struct DailyReportSections: View {
         Section {
             Link(destination: report.links.aihot) {
                 Label("打开网页版日报", systemImage: "arrow.up.right.square")
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.glass)
+            .controlSize(.large)
         } footer: {
             Text("摘要可能由自动化系统生成，重要事实请以原文为准。")
         }

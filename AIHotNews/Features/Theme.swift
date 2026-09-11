@@ -26,10 +26,6 @@ enum ReaderTheme {
 #endif
     }
 
-    static func accentForeground(for scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(red: 4 / 255, green: 47 / 255, blue: 46 / 255) : .white
-    }
-
     static func categoryName(_ category: String?) -> String {
         switch category {
         case "ai-models": "模型"
@@ -61,6 +57,7 @@ private struct ReaderBackground: ViewModifier {
 #if os(iOS)
             .listSectionSpacing(16)
 #endif
+            .scrollEdgeEffectStyle(.soft, for: .top)
             .scrollContentBackground(.hidden)
             .background(ReaderTheme.background(for: colorScheme).ignoresSafeArea())
             .tint(ReaderTheme.accent)

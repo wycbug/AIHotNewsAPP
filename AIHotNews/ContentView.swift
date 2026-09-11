@@ -49,20 +49,24 @@ struct ContentView: View {
             } else {
                 TabView(selection: $tabSelection) {
                     ForEach(AppSection.allCases) { section in
-                        NavigationStack(path: path(for: section)) {
-                            screen(section)
-                                .navigationDestination(for: ReaderRoute.self) { ReaderDestination(route: $0) }
+                        Tab(section.rawValue, systemImage: section.symbol, value: section) {
+                            NavigationStack(path: path(for: section)) {
+                                screen(section)
+                                    .navigationDestination(for: ReaderRoute.self) { ReaderDestination(route: $0) }
+                            }
                         }
-                        .tag(section)
-                        .tabItem { Label(section.rawValue, systemImage: section.symbol) }
                     }
                 }
+                .tabBarMinimizeBehavior(.onScrollDown)
             }
 #endif
         }
         .tint(.accentColor)
         .safariPresenter()
         .onOpenURL { url in Task { await open(url) } }
+        .onChange(of: tabSelection) { _, section in
+            if section != .feed { isSearchingFeed = false }
+        }
         .alert("无法打开链接", isPresented: Binding(get: { linkMessage != nil }, set: { if !$0 { linkMessage = nil } })) {
             Button("好", role: .cancel) { linkMessage = nil }
         } message: { Text(linkMessage ?? "") }
@@ -74,6 +78,7 @@ struct ContentView: View {
                 selection = newSelection
                 detail = nil
                 detailPath = []
+                if let newSelection, newSelection != .feed { isSearchingFeed = false }
             })) { section in
                 Label(section.rawValue, systemImage: section.symbol)
                     .tag(section)

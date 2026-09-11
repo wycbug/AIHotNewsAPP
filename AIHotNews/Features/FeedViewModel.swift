@@ -52,19 +52,6 @@ final class FeedViewModel {
         let request = request
         let token = UUID()
         generation = token
-        if displayedQuery != request {
-            items = []
-            nextCursor = nil
-            cursorDay = nil
-            pageError = nil
-            message = nil
-            firstPage = nil
-            hasMore = false
-        } else if cursorDay != shanghaiDay() {
-            nextCursor = nil
-            cursorDay = nil
-        }
-        displayedQuery = request
         isPaging = false
         guard searchValidation == nil else {
             isLoading = false
@@ -81,6 +68,19 @@ final class FeedViewModel {
             if debounce { try await Task.sleep(for: .milliseconds(300)) }
             try Task.checkCancellation()
             guard generation == token, request == self.request else { return }
+            if displayedQuery != request {
+                items = []
+                nextCursor = nil
+                cursorDay = nil
+                pageError = nil
+                message = nil
+                firstPage = nil
+                hasMore = false
+            } else if cursorDay != shanghaiDay() {
+                nextCursor = nil
+                cursorDay = nil
+            }
+            displayedQuery = request
             let endpoint = try APIEndpoint<ItemsResponse>.items(request)
             if items.isEmpty, let cached = await repository.cached(endpoint) {
                 try Task.checkCancellation()

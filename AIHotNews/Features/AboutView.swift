@@ -196,6 +196,12 @@ struct SettingsView: View {
         .onChange(of: publishedOrder) { _, value in
             container.feed.query.by = value ? .published : .timeline
         }
+        .onChange(of: defaultWindow) { _, value in
+            if let window = ItemsWindow(rawValue: value) { container.feed.query.window = window }
+        }
+        .onChange(of: defaultMode) { _, value in
+            if let mode = ItemsMode(rawValue: value) { container.feed.query.mode = mode }
+        }
         .confirmationDialog("清除本机网络缓存？", isPresented: $confirmClearCache, titleVisibility: .visible) {
             Button("清除缓存", role: .destructive) { clearCache() }
             Button("取消", role: .cancel) {}

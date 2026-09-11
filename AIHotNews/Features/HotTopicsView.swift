@@ -7,8 +7,8 @@ struct HotTopicsView: View {
 
     var body: some View {
         List {
-            Section {
-                if !hideExplanation {
+            if !hideExplanation {
+                Section {
                     HStack(alignment: .top, spacing: 12) {
                         Text("多源同时报道的当前事件，不是热度分数榜。")
                             .font(.footnote).foregroundStyle(.secondary)
@@ -20,9 +20,9 @@ struct HotTopicsView: View {
                         .accessibilityLabel("关闭热点说明")
                     }
                 }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
             LoadStatusView(isLoading: model.isLoading, message: model.message, retryAt: model.retryAt) {
                 await model.load(.hotTopics(), reload: true)
             }
@@ -69,6 +69,16 @@ struct HotTopicsView: View {
         }
         .readerBackground()
         .navigationTitle("热点")
+#if os(macOS)
+        .toolbar {
+            Button { Task { await model.load(.hotTopics(), reload: true) } } label: {
+                Label("刷新", systemImage: "arrow.clockwise")
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(model.isLoading)
+        }
+#endif
         .task { await model.load(.hotTopics()) }
         .refreshable { await model.load(.hotTopics(), reload: true) }
     }
@@ -164,9 +174,10 @@ struct StoryDetailView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                         Link(destination: story.links.aihot) {
                             Label("打开事件站内页", systemImage: "arrow.up.right.square")
-                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.glass)
+                        .controlSize(.large)
                     }
                     .padding(.vertical, 8)
                 }
@@ -211,6 +222,14 @@ struct StoryDetailView: View {
                 ShareLink(item: story.links.aihot, subject: Text(story.title))
                     .accessibilityLabel("分享事件")
             }
+#if os(macOS)
+            Button { Task { await load(reload: true) } } label: {
+                Label("刷新", systemImage: "arrow.clockwise")
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(model.isLoading)
+#endif
         }
         .task { await load() }
         .refreshable { await load(reload: true) }

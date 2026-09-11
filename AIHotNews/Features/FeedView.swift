@@ -32,10 +32,21 @@ struct FeedView: View {
             }
 
             if let validation = model.searchValidation {
-                Section {
-                    ContentUnavailableView("至少输入两个字", systemImage: "magnifyingglass", description: Text(validation))
+                if model.items.isEmpty {
+                    Section {
+                        ContentUnavailableView("至少输入两个字", systemImage: "magnifyingglass", description: Text(validation))
+                    }
+                    .listRowBackground(Color.clear)
+                } else {
+                    Section {
+                        Label(validation, systemImage: "magnifyingglass")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 4)
+                    }
+                    .listRowBackground(ReaderTheme.accent.opacity(0.06))
+                    feedContent
                 }
-                .listRowBackground(Color.clear)
             } else {
                 feedContent
             }
@@ -90,21 +101,13 @@ struct FeedView: View {
                 }
             }
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(categories, id: \.self) { category in
-                        Button {
-                            model.query.category = category
-                        } label: {
-                            Text(category.map { ReaderTheme.categoryName($0) } ?? "全部类型")
-                                .font(.subheadline.weight(model.query.category == category ? .semibold : .regular))
-                                .padding(.horizontal, 16)
-                                .frame(minHeight: 44)
-                                .foregroundStyle(model.query.category == category ? ReaderTheme.accentForeground(for: colorScheme) : .primary)
-                                .background(model.query.category == category ? ReaderTheme.accent : ReaderTheme.surface(for: colorScheme), in: Capsule())
-                                .overlay(Capsule().strokeBorder(.primary.opacity(model.query.category == category ? 0 : 0.08)))
+                GlassEffectContainer(spacing: 8) {
+                    HStack(spacing: 8) {
+                        ForEach(categories, id: \.self) { category in
+                            CategoryChip(category: category, selected: model.query.category == category) {
+                                model.query.category = category
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(model.query.category == category ? .isSelected : [])
                     }
                 }
             }
@@ -176,7 +179,7 @@ struct FeedView: View {
                 } actions: {
                     if !model.messageIsFailure && model.query.window == .day {
                         Button("查看 7 天") { model.query.window = .week }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.glassProminent)
                             .controlSize(.large)
                     }
                 }
@@ -254,6 +257,32 @@ private extension FeedViewModel {
     var messageIsFailure: Bool {
         guard let message else { return false }
         return !message.hasPrefix("更新于") && !message.hasPrefix("正在显示缓存")
+    }
+}
+
+private struct CategoryChip: View {
+    let category: String?
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        if selected {
+            chip.buttonStyle(.glassProminent)
+        } else {
+            chip.buttonStyle(.glass)
+        }
+    }
+
+    private var chip: some View {
+        Button(action: action) {
+            Text(category.map(ReaderTheme.categoryName) ?? "全部类型")
+                .font(.subheadline.weight(selected ? .semibold : .regular))
+                .padding(.horizontal, 6)
+                .frame(minHeight: 44)
+        }
+        .buttonBorderShape(.capsule)
+        .tint(ReaderTheme.accent)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

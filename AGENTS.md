@@ -1,7 +1,7 @@
 # 工程约定
 
 - 使用中文回复。产品约束以 `docs/PRD.md` 为准，接口契约以根目录 `openapi-v1.json` 为准。
-- 工程使用 Xcode 26.6、SwiftUI、Observation、SwiftData 和 Foundation URLSession，无第三方依赖。支持 iOS/iPadOS 17+、macOS 14+。
+- 工程使用 Xcode 26.6、SwiftUI、Observation、SwiftData 和 Foundation URLSession，无第三方依赖。支持 iOS/iPadOS 26+、macOS 26+。
 - Xcode 使用文件系统同步分组；`AIHotNews/` 和 `AIHotNewsTests/` 下的 Swift 文件自动加入对应 target，无需手工登记 Sources。
 - App/Features 的状态使用 MainActor；Core/Networking 和 Data/Models 的跨隔离值类型、Codable 实现与 extension 工厂方法显式标记 `nonisolated`，避免默认 MainActor 隔离影响网络解码。
 - JSON API 请求固定发送至 `https://aihot.news/api/v1/`。事件网页链接可能使用不同域名（实测 `aihot.virxact.com`）；只从 API 返回的链接末段提取 ID，再调用固定 JSON API，不直接请求网页获得正文。
